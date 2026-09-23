@@ -3,6 +3,7 @@ package hub
 import (
 	"net/http"
 	"sync"
+	"time"
 
 	"github.com/gorilla/websocket"
 
@@ -12,11 +13,19 @@ import (
 // MaxLogs caps the in-memory history sent to freshly opened UIs.
 const MaxLogs = 300
 
+// writeTimeout bounds one broadcast write so a stalled browser cannot
+// hold up every other log line behind it.
+const writeTimeout = 5 * time.Second
+
 // Hub keeps the recent log ring buffer and fans new logs out to browsers.
 type Hub struct {
 	mu      sync.Mutex
 	clients map[*websocket.Conn]struct{}
 	logs    []events.StepLog
+	// wmu serializes all websocket writes. gorilla/websocket forbids
+	// concurrent writers on one connection (it panics), and Add runs on
+	// one goroutine per incoming /internal/log request.
+	wmu sync.Mutex
 }
 
 var upgrader = websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { return true }}
@@ -38,7 +47,10 @@ func (h *Hub) Add(l events.StepLog) {
 	}
 	h.mu.Unlock()
 
+	h.wmu.Lock()
+	defer h.wmu.Unlock()
 	for _, c := range clients {
+		_ = c.SetWriteDeadline(time.Now().Add(writeTimeout))
 		if err := c.WriteJSON(l); err != nil {
 			h.mu.Lock()
 			delete(h.clients, c)
