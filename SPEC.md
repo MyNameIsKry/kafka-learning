@@ -85,18 +85,19 @@ kafka-learning/
 │     ├─ service/service.go   khung dùng chung: HTTP + consumer + toggle up/down + báo log
 │     └─ store/store.go       tồn kho in-memory (mutex)
 └─ web/
-   ├─ package.json            Vite + React 19 + TypeScript
+   ├─ package.json            Vite + React 19 + TypeScript + Tailwind v4 + framer-motion
    └─ src/
       ├─ App.tsx
-      ├─ api.ts  useSocket.ts  types.ts  styles.css
+      ├─ api.ts  useSocket.ts  types.ts  index.css (entry Tailwind, dark theme)
       └─ components/
          ├─ ControlBar.tsx    chọn sản phẩm/số lượng, các nút demo
          ├─ FlowColumn.tsx    một cột (đồng bộ hoặc Kafka)
-         ├─ FlowDiagram.tsx   sơ đồ SVG, chấm message chạy theo cạnh
-         ├─ LatencyBar.tsx    số ms cỡ lớn + thanh so sánh
+         ├─ FlowDiagram.tsx   sơ đồ SVG, chấm message chạy theo cạnh (framer-motion)
+         ├─ LatencyBar.tsx    số ms cỡ lớn + thanh so sánh (count-up)
          ├─ LogList.tsx       log realtime
          ├─ StatePanel.tsx    tồn kho + số đơn mỗi service đã xử lý
-         └─ BurstResult.tsx   bảng p50/p95/max của hai chế độ
+         ├─ BurstResult.tsx   bảng p50/p95/max của hai chế độ
+         └─ OrderHistory.tsx  bảng lịch sử đơn từ MongoDB (tầng 4, ngoài SPEC gốc)
 ```
 
 ---
@@ -193,7 +194,7 @@ message chỉ nằm chờ trong topic và làm **lag** tăng. Đây chính là �
 
 ## 7. Giao diện
 
-Một trang duy nhất, nền tối, chữ lớn để chiếu máy chiếu. Ba tầng:
+Một trang duy nhất, nền tối, chữ lớn để chiếu máy chiếu. Bốn tầng:
 
 **Tầng 1 — Thanh điều khiển**
 - Chọn sản phẩm + số lượng.
@@ -214,9 +215,14 @@ Mỗi cột gồm:
 **Tầng 3 —** `StatePanel` (tồn kho từng sản phẩm, số đơn mỗi service đã xử lý, service nào đang tắt)
 và `BurstResult` (bảng p50/p95/max/số lỗi của hai chế độ cạnh nhau).
 
-Kỹ thuật: Vite + React + TS, **CSS thuần** (không Tailwind, không thư viện chart — thanh bar bằng
-`div`). WebSocket tự kết nối lại khi rớt. Log của burst (`burst: true`) không đổ vào LogList mà chỉ
-cập nhật bộ đếm, tránh ngập màn hình.
+**Tầng 4 —** `OrderHistory` (ngoài SPEC gốc, phục vụ §12): bảng lịch sử đơn từ MongoDB,
+mới nhất trước, poll 5s + refresh sau mỗi thao tác.
+
+Kỹ thuật: Vite + React + TS, **Tailwind v4 + framer-motion** (chấm message, node
+pulse, count-up số ms, animate bảng khi có dữ liệu mới; thanh bar bằng `div`).
+WebSocket tự kết nối lại khi rớt. Log burst hiện đủ trong LogList như đơn lẻ
+(cửa sổ scroll, cap 200 dòng render, badge `burst` phân biệt); bộ đếm burstDone
+theo dõi số đơn burst đã đủ 3 bước done.
 
 ---
 
