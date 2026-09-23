@@ -238,8 +238,9 @@ lag, at-least-once, fan-out.
 
 ## 9. Ngoài phạm vi
 
-Không làm: database thật, gửi mail thật, xác thực, Docker hoá phần Go/React (chạy bằng `go run` và
-`npm run dev` cho dễ demo và dễ sửa tại chỗ), Schema Registry, Avro, exactly-once/transaction,
+Không làm: gửi mail thật, xác thực, Docker hoá phần Go/React (chạy bằng `go run` và
+`npm run dev` cho dễ demo và dễ sửa tại chỗ; chỉ Kafka, Kafka UI và MongoDB chạy Docker),
+Schema Registry, Avro, exactly-once/transaction,
 dead-letter queue. Nếu còn thời gian có thể bàn thêm ở phần Q&A.
 
 ---
@@ -261,3 +262,20 @@ dead-letter queue. Nếu còn thời gian có thể bàn thêm ở phần Q&A.
 - Cả 6 kịch bản ở mục 8 tái hiện được, không cần gõ lệnh phụ (trừ kịch bản 5 cần terminal thứ hai).
 - Sau `Reset`, tồn kho và bộ đếm về đúng giá trị ban đầu.
 - `go vet ./...` và `npm run build` sạch lỗi.
+
+---
+
+## 12. MongoDB (ngoài SPEC gốc — thêm để trực quan)
+
+MongoDB là dependency bắt buộc (`make kafka-up` kéo theo). Xem bằng Compass:
+`mongodb://localhost:27017/kafka-demo`. Biến môi trường: `MONGO_URI`, `MONGO_DB`.
+
+| Collection | Nội dung | Ai ghi |
+|---|---|---|
+| `stock` | `{_id: productId, stock}` — tồn kho **dùng chung** mọi instance inventory (trừ atomic `$inc` có guard `$gte`) | inventory (seed + trừ + reset) |
+| `orders` | `{_id, productId, qty, mode, burst, status, steps[], totalMs, createdAt}` — lịch sử + timeline từng đơn | gateway (tạo/xóa) + gateway gom từ `StepLog` ở `/internal/log` |
+
+`status`: `received → processing → done | error`. Đơn kafka `done` khi đủ 3 bước
+flow; `totalMs` của đơn kafka là end-to-end (tạo → xong), của đơn sync là thời gian
+user phải chờ. API thêm: `GET /api/orders?limit=50` (mới nhất trước) phục vụ bảng
+lịch sử ở FE. `POST /api/reset` xoá cả `orders`.
