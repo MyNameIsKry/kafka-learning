@@ -191,23 +191,65 @@ func (c *Client) ClearOrders() error {
 	return err
 }
 
-// ListOrders returns the newest orders first for GET /api/orders.
-func (c *Client) ListOrders(limit int) []OrderDoc {
-	if limit <= 0 || limit > 200 {
-		limit = 50
+// OrderFilter mirrors the GET /api/orders query params. Empty means all.
+type OrderFilter struct {
+	Mode      string
+	Status    string
+	ProductID string
+	Burst     string // "true" | "false" | "" (all)
+	Page      int
+	Limit     int
+}
+
+// OrderPage is the paginated envelope served to the UI history table.
+type OrderPage struct {
+	Orders []OrderDoc `bson:"orders" json:"orders"`
+	Total  int64      `bson:"total" json:"total"`
+	Page   int        `bson:"page" json:"page"`
+	Pages  int        `bson:"pages" json:"pages"`
+}
+
+// ListOrderPage applies filters plus skip/limit and counts the total.
+func (c *Client) ListOrderPage(f OrderFilter) OrderPage {
+	if f.Limit <= 0 || f.Limit > 100 {
+		f.Limit = 10
 	}
+	if f.Page <= 0 {
+		f.Page = 1
+	}
+	filter := bson.M{}
+	if f.Mode != "" {
+		filter["mode"] = f.Mode
+	}
+	if f.Status != "" {
+		filter["status"] = f.Status
+	}
+	if f.ProductID != "" {
+		filter["productId"] = f.ProductID
+	}
+	if f.Burst == "true" {
+		filter["burst"] = true
+	} else if f.Burst == "false" {
+		filter["burst"] = false
+	}
+
 	ctx, cancel := opCtx()
 	defer cancel()
-	out := []OrderDoc{}
-	cur, err := c.orders.Find(ctx, bson.M{},
-		options.Find().SetSort(bson.M{"createdAt": -1}).SetLimit(int64(limit)))
+	total, _ := c.orders.CountDocuments(ctx, filter)
+	pages := int((total + int64(f.Limit) - 1) / int64(f.Limit))
+
+	out := OrderPage{Orders: []OrderDoc{}, Total: total, Page: f.Page, Pages: pages}
+	cur, err := c.orders.Find(ctx, filter,
+		options.Find().SetSort(bson.M{"createdAt": -1}).
+			SetSkip(int64((f.Page - 1) * f.Limit)).
+			SetLimit(int64(f.Limit)))
 	if err != nil {
 		return out
 	}
 	defer cur.Close(ctx)
-	_ = cur.All(ctx, &out)
-	if out == nil {
-		out = []OrderDoc{}
+	_ = cur.All(ctx, &out.Orders)
+	if out.Orders == nil {
+		out.Orders = []OrderDoc{}
 	}
 	return out
 }

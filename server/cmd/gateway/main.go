@@ -324,15 +324,33 @@ func handleLogs(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, logs)
 }
 
-// handleOrders serves the order history stored in MongoDB.
+// handleOrders serves the filtered, paginated order history from MongoDB.
 func handleOrders(w http.ResponseWriter, r *http.Request) {
-	limit := 50
-	if v := r.URL.Query().Get("limit"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil {
-			limit = n
+	q := r.URL.Query()
+	valid := func(v string, allowed ...string) string {
+		for _, a := range allowed {
+			if v == a {
+				return v
+			}
 		}
+		return ""
 	}
-	writeJSON(w, http.StatusOK, db.ListOrders(limit))
+	page := 1
+	if n, err := strconv.Atoi(q.Get("page")); err == nil && n > 0 {
+		page = n
+	}
+	limit := 10
+	if n, err := strconv.Atoi(q.Get("limit")); err == nil && n > 0 {
+		limit = n
+	}
+	writeJSON(w, http.StatusOK, db.ListOrderPage(mongostore.OrderFilter{
+		Mode:      valid(q.Get("mode"), events.ModeSync, events.ModeKafka),
+		Status:    valid(q.Get("status"), mongostore.OrderReceived, mongostore.OrderProcessing, mongostore.OrderDone, mongostore.OrderError),
+		ProductID: valid(q.Get("productId"), "SP-01", "SP-02", "SP-03"),
+		Burst:     valid(q.Get("burst"), "true", "false"),
+		Page:      page,
+		Limit:     limit,
+	}))
 }
 
 func handleReset(w http.ResponseWriter, _ *http.Request) {
