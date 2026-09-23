@@ -283,5 +283,6 @@ MongoDB là dependency bắt buộc (`make kafka-up` kéo theo). Xem bằng Comp
 
 `status`: `received → processing → done | error`. Đơn kafka `done` khi đủ 3 bước
 flow; `totalMs` của đơn kafka là end-to-end (tạo → xong), của đơn sync là thời gian
-user phải chờ. API thêm: `GET /api/orders?limit=50` (mới nhất trước) phục vụ bảng
-lịch sử ở FE. `POST /api/reset` xoá cả `orders`.
+user phải chờ. API thêm: `GET /api/orders?mode=&status=&productId=&burst=&page=&limit=`
+trả envelope `{orders, total, page, pages}` (mới nhất trước, `limit` default 10 max 100)
+phục vụ bảng lịch sử có filter + phân trang ở FE. `POST /api/reset` xoá cả `orders`.
