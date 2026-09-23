@@ -12,6 +12,21 @@ export const API_URL =
   import.meta.env.VITE_API_URL ?? "http://localhost:8080";
 export const WS_URL = API_URL.replace(/^http/, "ws") + "/ws";
 
+export interface OrderQuery {
+  mode?: string;
+  status?: string;
+  productId?: string;
+  burst?: string;
+  page?: number;
+}
+
+export interface OrderPage {
+  orders: OrderDoc[];
+  total: number;
+  page: number;
+  pages: number;
+}
+
 async function req<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(API_URL + path, {
     headers: { "Content-Type": "application/json" },
@@ -44,7 +59,16 @@ export const api = {
     }),
   state: () => req<SystemState>("/api/state"),
   logs: () => req<StepLog[]>("/api/logs"),
-  orders: (limit = 20) => req<OrderDoc[]>(`/api/orders?limit=${limit}`),
+  orders: (q: OrderQuery = {}) => {
+    const p = new URLSearchParams();
+    if (q.mode) p.set("mode", q.mode);
+    if (q.status) p.set("status", q.status);
+    if (q.productId) p.set("productId", q.productId);
+    if (q.burst) p.set("burst", q.burst);
+    p.set("page", String(q.page ?? 1));
+    p.set("limit", "10");
+    return req<OrderPage>(`/api/orders?${p.toString()}`);
+  },
   reset: () => req<{ ok: boolean }>("/api/reset", { method: "POST" }),
   serviceToggle: (name: string, down: boolean) =>
     req<{ ok: boolean }>(`/api/services/${name}/${down ? "down" : "up"}`, {

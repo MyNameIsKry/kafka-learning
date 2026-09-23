@@ -1,4 +1,6 @@
+import { useCallback, useEffect, useState } from "react";
 import { motion } from "framer-motion";
+import { api } from "../api";
 import type { OrderDoc, OrderStatus } from "../types";
 
 const statusStyle: Record<OrderStatus, string> = {
@@ -19,20 +21,129 @@ function fmtTime(iso: string) {
   return new Date(iso).toLocaleTimeString("vi-VN", { hour12: false });
 }
 
-// Lịch sử đơn từ MongoDB — bảng full-width tầng 4.
-export default function OrderHistory({ orders }: { orders: OrderDoc[] }) {
+const selectCls =
+  "rounded-lg border border-slate-700 bg-slate-800 px-2 py-1.5 text-sm";
+
+// Lịch sử đơn từ MongoDB — bảng full-width tầng 4, filter + phân trang.
+export default function OrderHistory({ refreshKey }: { refreshKey: number }) {
+  const [mode, setMode] = useState("");
+  const [status, setStatus] = useState("");
+  const [productId, setProductId] = useState("");
+  const [burst, setBurst] = useState("");
+  const [page, setPage] = useState(1);
+  const [orders, setOrders] = useState<OrderDoc[]>([]);
+  const [total, setTotal] = useState(0);
+  const [pages, setPages] = useState(0);
+
+  const load = useCallback(async () => {
+    try {
+      const res = await api.orders({ mode, status, productId, burst, page });
+      // Thủ thế shape lạ (vd gateway cũ trả mảng thuần): không bao giờ crash.
+      setOrders(Array.isArray(res.orders) ? res.orders : []);
+      setTotal(typeof res.total === "number" ? res.total : 0);
+      setPages(typeof res.pages === "number" ? res.pages : 0);
+    } catch {
+      // Bỏ qua, lần poll sau thử lại.
+    }
+  }, [mode, status, productId, burst, page]);
+
+  useEffect(() => {
+    load();
+    const t = setInterval(load, 5000);
+    return () => clearInterval(t);
+  }, [load, refreshKey]);
+
+  const pick = (setter: (v: string) => void) => (v: string) => {
+    setter(v);
+    setPage(1);
+  };
+
   return (
     <div className="rounded-2xl border border-slate-700/60 bg-slate-900/70 p-4 shadow-xl">
-      <h3 className="mb-3 text-lg font-extrabold">
-        Lịch sử đơn{" "}
-        <span className="text-sm font-medium text-slate-500">
-          (MongoDB · mới nhất trước)
+      <div className="mb-3 flex flex-wrap items-center gap-3">
+        <h3 className="text-lg font-extrabold">
+          Lịch sử đơn{" "}
+          <span className="text-sm font-medium text-slate-500">
+            (MongoDB · mới nhất trước · {total} đơn)
+          </span>
+        </h3>
+        <span className="mx-1 hidden h-6 w-px bg-slate-700/70 sm:block" />
+        <label className="flex items-center gap-1.5 text-sm text-slate-300">
+          Chế độ
+          <select
+            value={mode}
+            onChange={(e) => pick(setMode)(e.target.value)}
+            className={selectCls}
+          >
+            <option value="">Tất cả</option>
+            <option value="sync">Không Kafka</option>
+            <option value="kafka">Có Kafka</option>
+          </select>
+        </label>
+        <label className="flex items-center gap-1.5 text-sm text-slate-300">
+          Trạng thái
+          <select
+            value={status}
+            onChange={(e) => pick(setStatus)(e.target.value)}
+            className={selectCls}
+          >
+            <option value="">Tất cả</option>
+            <option value="received">Đã nhận</option>
+            <option value="processing">Đang xử lý</option>
+            <option value="done">Xong</option>
+            <option value="error">Lỗi</option>
+          </select>
+        </label>
+        <label className="flex items-center gap-1.5 text-sm text-slate-300">
+          Sản phẩm
+          <select
+            value={productId}
+            onChange={(e) => pick(setProductId)(e.target.value)}
+            className={selectCls}
+          >
+            <option value="">Tất cả</option>
+            <option>SP-01</option>
+            <option>SP-02</option>
+            <option>SP-03</option>
+          </select>
+        </label>
+        <label className="flex items-center gap-1.5 text-sm text-slate-300">
+          Burst
+          <select
+            value={burst}
+            onChange={(e) => pick(setBurst)(e.target.value)}
+            className={selectCls}
+          >
+            <option value="">Tất cả</option>
+            <option value="true">Chỉ burst</option>
+            <option value="false">Ẩn burst</option>
+          </select>
+        </label>
+        <span className="ml-auto flex items-center gap-2 text-sm text-slate-300">
+          <button
+            disabled={page <= 1}
+            onClick={() => setPage((p) => Math.max(1, p - 1))}
+            className="rounded-lg border border-slate-600 px-3 py-1.5 hover:bg-slate-800 disabled:opacity-40"
+          >
+            « Trước
+          </button>
+          <span className="font-mono tabular-nums">
+            {pages === 0 ? "0 / 0" : `${page} / ${pages}`}
+          </span>
+          <button
+            disabled={pages === 0 || page >= pages}
+            onClick={() => setPage((p) => p + 1)}
+            className="rounded-lg border border-slate-600 px-3 py-1.5 hover:bg-slate-800 disabled:opacity-40"
+          >
+            Sau »
+          </button>
         </span>
-      </h3>
+      </div>
+
       {orders.length === 0 ? (
         <div className="text-sm text-slate-500">
-          Chưa có đơn nào — đặt hàng để thấy lịch sử hiện ở đây và trong
-          Compass.
+          Không có đơn nào khớp filter — đặt hàng để thấy lịch sử hiện ở đây
+          và trong Compass.
         </div>
       ) : (
         <div className="overflow-x-auto">

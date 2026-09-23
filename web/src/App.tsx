@@ -4,7 +4,6 @@ import { useSocket } from "./useSocket";
 import type {
   BurstResult,
   Mode,
-  OrderDoc,
   StepLog,
   SystemState,
 } from "./types";
@@ -64,7 +63,7 @@ export default function App() {
   const [sync, setSync] = useState<ColState>(blankCol);
   const [kafka, setKafka] = useState<ColState>(blankCol);
   const [system, setSystem] = useState<SystemState | null>(null);
-  const [orders, setOrders] = useState<OrderDoc[]>([]);
+  const [ordersTick, setOrdersTick] = useState(0);
   const [burstSync, setBurstSync] = useState<BurstResult | null>(null);
   const [burstKafka, setBurstKafka] = useState<BurstResult | null>(null);
   const timers = useRef<ReturnType<typeof setTimeout>[]>([]);
@@ -162,13 +161,8 @@ export default function App() {
     }
   }, []);
 
-  const refreshOrders = useCallback(async () => {
-    try {
-      setOrders(await api.orders(20));
-    } catch {
-      // Bỏ qua, lần poll sau thử lại.
-    }
-  }, []);
+  // OrderHistory tự fetch + poll; App chỉ chọc nó refresh sau thao tác.
+  const pokeOrders = useCallback(() => setOrdersTick((t) => t + 1), []);
 
   // Nạp lần đầu + poll.
   useEffect(() => {
@@ -179,15 +173,12 @@ export default function App() {
       })
       .catch(() => {});
     refreshState();
-    refreshOrders();
     const s = setInterval(refreshState, 2000);
-    const o = setInterval(refreshOrders, 5000);
     return () => {
       clearInterval(s);
-      clearInterval(o);
       timers.current.forEach(clearTimeout);
     };
-  }, [pushLog, refreshState, refreshOrders]);
+  }, [pushLog, refreshState]);
 
   async function run<T>(fn: () => Promise<T>): Promise<T | null> {
     setBusy(true);
@@ -242,7 +233,7 @@ export default function App() {
       }));
     }
     refreshState();
-    refreshOrders();
+    pokeOrders();
   };
 
   const onOrder = (mode: Mode) => run(() => placeOrder(mode));
@@ -253,7 +244,7 @@ export default function App() {
       if (mode === "sync") setBurstSync(res);
       else setBurstKafka(res);
       refreshState();
-      refreshOrders();
+      pokeOrders();
     });
 
   const onToggleEmail = () =>
@@ -272,7 +263,7 @@ export default function App() {
       setBurstKafka(null);
       burstTrack.current.clear();
       refreshState();
-      refreshOrders();
+      pokeOrders();
     });
 
   const emailDown =
@@ -339,7 +330,7 @@ export default function App() {
         <BurstResultView sync={burstSync} kafka={burstKafka} />
       </div>
 
-      <OrderHistory orders={orders} />
+      <OrderHistory refreshKey={ordersTick} />
 
       <footer className="pb-4 text-center text-xs text-slate-600">
         Demo tìm hiểu Kafka · React + Go + Kafka + MongoDB
