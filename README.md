@@ -9,8 +9,10 @@ MongoDB, GATv2 và React Dashboard.
 - Kafka KRaft, Kafka UI và MongoDB chạy bằng Docker Compose.
 - Các topic PaySim được tạo với một partition cho MVP.
 - MongoDB sẵn sàng; collections được tạo tự động khi sink khởi động.
-- DTO Python, test chống leakage, PaySim replay producer, mock inference consumer,
-  raw sink, prediction sink và alert consumer đã được triển khai.
+- Go runtime contracts, PaySim replay producer, mock inference consumer, raw
+  sink, prediction sink và alert consumer đã được triển khai.
+- Kafka là event store/source of truth; MongoDB chỉ là read-model projection có
+  thể rebuild bằng consumer group mới.
 - Metrics vận hành và benchmark runner đã có; model GATv2 thật và graph-state recovery chưa tích hợp.
 
 ## Khởi động infrastructure
@@ -42,30 +44,31 @@ make topics
 
 ## PaySim replay producer
 
-Cài dependency Python trước khi chạy producer:
+Cài dependencies cho Go runtime:
 
 ```bash
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
+cd server
+go mod download
+cd ..
 ```
+
+Python environment chỉ cần cho offline pipeline và evaluation.
 
 Validate CSV và tạo ground truth offline mà không kết nối Kafka:
 
 ```bash
-python3 -m producer.main \
-  --csv data/PS_20174392719_1491204439457_log.csv \
-  --ground-truth-path data/ground_truth.csv \
-  --dry-run
+(cd server && go run ./cmd/producer \
+  --csv "$(pwd)/data/PS_20174392719_1491204439457_log.csv" \
+  --ground-truth-path "$(pwd)/data/ground_truth.csv" \
+  --dry-run)
 ```
 
 Replay vào Kafka local, ví dụ 100 events/giây:
 
 ```bash
-python3 -m producer.main \
-  --csv data/PS_20174392719_1491204439457_log.csv \
-  --ground-truth-path data/ground_truth.csv \
-  --events-per-second 100
+make producer \
+  CSV=data/PS_20174392719_1491204439457_log.csv \
+  GROUND_TRUTH=data/ground_truth.csv
 ```
 
 Hoặc dùng Makefile:
@@ -77,8 +80,8 @@ make producer CSV=data/PS_20174392719_1491204439457_log.csv
 Producer publish raw event có đủ bốn balance nhưng không publish
 `isFraud`/`isFlaggedFraud`. Labels được ghi riêng vào ground-truth CSV.
 
-Producer xác thực toàn bộ CSV trước khi publish, sử dụng external sort theo
-`(step, sourceRowIndex)` để không giữ toàn bộ PaySim trong RAM. Khi delivery
+Producer xác thực toàn bộ CSV, external-sort theo `(step, sourceRowIndex)` với
+chunk giới hạn bộ nhớ và publish theo thứ tự đó. Khi delivery
 failure, producer dừng mặc định để không bỏ qua event giữa chuỗi. Chỉ dùng
 `--continue-on-error` khi muốn chủ động bỏ qua event lỗi.
 
@@ -87,17 +90,15 @@ failure, producer dừng mặc định để không bỏ qua event giữa chuỗ
 Chạy consumer sau khi infrastructure đã khởi động:
 
 ```bash
-python3 -m consumer.main \
-  --batch-size 32 \
-  --max-wait-ms 250 \
+(cd server && go run ./cmd/inference \
   --mock-score 0.1 \
-  --mock-threshold 0.8
+  --mock-threshold 0.8)
 ```
 
 Để kiểm tra nhánh anomaly trong wiring test:
 
 ```bash
-python3 -m consumer.main --mock-score 0.95 --mock-threshold 0.8
+(cd server && go run ./cmd/inference --mock-score 0.95 --mock-threshold 0.8)
 ```
 
 Consumer chỉ commit input offset sau khi validation/DLQ, inference và các
@@ -125,10 +126,10 @@ make alert-consumer
 Có thể cấu hình trực tiếp:
 
 ```bash
-python3 -m sink.main --kind prediction \
+(cd server && go run ./cmd/sink --kind prediction \
   --mongo-uri mongodb://localhost:27017 \
   --mongo-db financial_anomaly \
-  --batch-size 32 --max-wait-ms 250 --max-retries 3
+  --max-retries 3)
 ```
 
 Raw sink lưu bốn trường balance nhưng không có PaySim labels. Prediction và
@@ -137,6 +138,10 @@ raw theo `transactionId`, prediction/alert theo
 `(transactionId, modelVersion)`. Event lỗi schema được ghi vào
 `transactions.dlq`; lỗi MongoDB hoặc lỗi publish DLQ làm batch retry và không
 commit offset cho tới khi lưu thành công.
+
+Kafka là event store authoritative trong runtime Go. MongoDB không phải nguồn
+dữ liệu chính; các collection projection có thể rebuild bằng cách chạy sink
+với consumer group mới từ `FirstOffset`.
 
 Các collection/index được tạo bởi `MongoStore`:
 
@@ -207,11 +212,11 @@ port riêng, bind loopback mặc định; không export account IDs, balance ho�
 PaySim labels:
 
 ```bash
-python3 -m consumer.main --metrics-port 9101
-python3 -m sink.main --kind raw --metrics-port 9102
-python3 -m sink.main --kind prediction --metrics-port 9103
-python3 -m sink.main --kind alert --metrics-port 9104
-# Thêm --metrics-port 9100 vào producer CLI nếu cần scrape khi replay.
+(cd server && go run ./cmd/inference --metrics-port 9101)
+(cd server && go run ./cmd/sink --kind raw --metrics-port 9102)
+(cd server && go run ./cmd/sink --kind prediction --metrics-port 9103)
+(cd server && go run ./cmd/sink --kind alert --metrics-port 9104)
+# Thêm --metrics-port 9100 vào cmd/producer nếu cần scrape khi replay.
 curl http://127.0.0.1:9101/metrics
 ```
 
@@ -257,9 +262,9 @@ for topic in bench.raw bench.scored bench.anomalies bench.dlq; do
     --topic "$topic" --partitions 1 --replication-factor 1
 done
 
-python3 -m consumer.main --topic bench.raw --group-id bench-inference \
+(cd server && go run ./cmd/inference --topic bench.raw --group-id bench-inference \
   --scored-topic bench.scored --anomalies-topic bench.anomalies \
-  --dlq-topic bench.dlq --metrics-port 9101
+  --dlq-topic bench.dlq --metrics-port 9101)
 ```
 
 Ở terminal khác:
@@ -351,11 +356,21 @@ của Phase 7 và chưa phải kết quả GATv2 thật.
 
 ## Contract tests
 
-Install Python dependencies and run the validation suite:
+Go runtime tests:
+
+```bash
+cd server
+go test ./...
+go vet ./...
+cd ..
+```
+
+Python dependencies are only needed for offline pipeline/evaluation and the
+legacy regression suite:
 
 ```bash
 python3 -m venv .venv
 . .venv/bin/activate
 pip install -r requirements.txt
-make contracts-test
+make python-legacy-test
 ```

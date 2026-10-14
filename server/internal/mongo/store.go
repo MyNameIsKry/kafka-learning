@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"server/internal/api"
+	"server/internal/events"
 
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
@@ -34,7 +35,31 @@ func New(ctx context.Context, uri, database string) (*Store, error) {
 		_ = client.Disconnect(context.Background())
 		return nil, err
 	}
+	if err := store.ensureIndexes(ctx); err != nil {
+		_ = client.Disconnect(context.Background())
+		return nil, err
+	}
 	return store, nil
+}
+
+func (s *Store) ensureIndexes(ctx context.Context) error {
+	if _, err := s.transactions.Indexes().CreateMany(ctx, []mongo.IndexModel{
+		{Keys: bson.D{{Key: "transactionId", Value: 1}}, Options: options.Index().SetUnique(true)},
+		{Keys: bson.D{{Key: "step", Value: 1}}},
+		{Keys: bson.D{{Key: "step", Value: 1}, {Key: "sourceRowIndex", Value: 1}, {Key: "transactionId", Value: 1}}},
+	}); err != nil {
+		return err
+	}
+	if _, err := s.predictions.Indexes().CreateMany(ctx, []mongo.IndexModel{
+		{Keys: bson.D{{Key: "transactionId", Value: 1}, {Key: "modelVersion", Value: 1}}, Options: options.Index().SetUnique(true)},
+		{Keys: bson.D{{Key: "step", Value: 1}, {Key: "isAnomaly", Value: 1}}},
+	}); err != nil {
+		return err
+	}
+	_, err := s.alerts.Indexes().CreateMany(ctx, []mongo.IndexModel{
+		{Keys: bson.D{{Key: "transactionId", Value: 1}, {Key: "modelVersion", Value: 1}}, Options: options.Index().SetUnique(true)},
+	})
+	return err
 }
 
 func (s *Store) Ping(ctx context.Context) error {
@@ -43,6 +68,35 @@ func (s *Store) Ping(ctx context.Context) error {
 
 func (s *Store) Close(ctx context.Context) error {
 	return s.client.Disconnect(ctx)
+}
+
+// UpsertRaw projects a raw Kafka event into MongoDB. Kafka remains the source
+// of truth; this collection is rebuildable with a new sink consumer group.
+func (s *Store) UpsertRaw(ctx context.Context, event events.RawTransactionEvent) error {
+	_, err := s.transactions.UpdateOne(ctx,
+		bson.D{{Key: "transactionId", Value: event.TransactionID}},
+		bson.D{{Key: "$set", Value: event}},
+		options.UpdateOne().SetUpsert(true),
+	)
+	return err
+}
+
+func (s *Store) UpsertPrediction(ctx context.Context, event events.TransactionPredictionEvent) error {
+	_, err := s.predictions.UpdateOne(ctx,
+		bson.D{{Key: "transactionId", Value: event.TransactionID}, {Key: "modelVersion", Value: event.ModelVersion}},
+		bson.D{{Key: "$set", Value: event}},
+		options.UpdateOne().SetUpsert(true),
+	)
+	return err
+}
+
+func (s *Store) UpsertAlert(ctx context.Context, event events.TransactionPredictionEvent) error {
+	_, err := s.alerts.UpdateOne(ctx,
+		bson.D{{Key: "transactionId", Value: event.TransactionID}, {Key: "modelVersion", Value: event.ModelVersion}},
+		bson.D{{Key: "$set", Value: event}},
+		options.UpdateOne().SetUpsert(true),
+	)
+	return err
 }
 
 func (s *Store) Summary(ctx context.Context) (api.Summary, error) {

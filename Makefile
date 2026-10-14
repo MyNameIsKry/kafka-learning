@@ -6,18 +6,27 @@ PIPELINE_OUTPUT_DIR ?= gatv2-pipeline/artifacts/paysim
 TRAIN_MODULE ?= paysim_pipeline.train
 TRAIN_CONFIG ?= gatv2-pipeline/configs/train.toml
 GROUND_TRUTH ?= data/ground_truth.csv
+BOOTSTRAP_SERVERS ?= localhost:9092
+GROUP_ID ?=
+MODEL_VERSION ?= mock-v1
+MOCK_SCORE ?= 0.1
+MOCK_THRESHOLD ?= 0.8
+MAX_RETRIES ?= 3
+DATASET_VERSION ?=
+MAX_EVENTS ?= 0
+METRICS_PORT ?= 0
 
-.PHONY: help kafka-up kafka-down topics api producer consumer raw-sink prediction-sink alert-consumer web vet build contracts-test paysim-pipeline pipeline-test benchmark evaluate shell dataset-download dataset-check prepare test train
+.PHONY: help kafka-up kafka-down topics api producer consumer raw-sink prediction-sink alert-consumer web vet build contracts-test go-test python-legacy-test paysim-pipeline pipeline-test benchmark evaluate shell dataset-download dataset-check prepare test train
 
 help:
 	@printf '%s\n' \
 	  'Kafka/Python pipeline:' \
 	  '  make kafka-up             Start Kafka, Kafka UI and MongoDB' \
 	  '  make api|web              Run API or dashboard' \
-	  '  make producer CSV=...     Replay PaySim into Kafka' \
-	  '  make consumer             Run mock inference consumer' \
+	  '  make producer CSV=...     Replay PaySim into Kafka (Go)' \
+	  '  make consumer             Run mock inference consumer (Go)' \
 	  '  make raw-sink|prediction-sink|alert-consumer' \
-	  '  make contracts-test       Run root contract/integration tests' \
+	  '  make contracts-test       Run Go runtime and Python regression tests' \
 	  '  make benchmark RAW_TOPIC=... SCORED_TOPIC=...' \
 	  '  make evaluate GROUND_TRUTH=... PREDICTIONS=... THRESHOLD=...' \
 	  '' \
@@ -43,19 +52,19 @@ api:
 
 producer:
 	test -n "$(CSV)" || (echo "Usage: make producer CSV=path/to/PS_*.csv" && exit 1)
-	python3 -m producer.main --csv "$(CSV)" --ground-truth-path "$(GROUND_TRUTH)"
+	cd server && go run ./cmd/producer --bootstrap-servers "$(BOOTSTRAP_SERVERS)" --csv "$(abspath $(CSV))" --ground-truth-path "$(abspath $(GROUND_TRUTH))" --dataset-version "$(DATASET_VERSION)" --max-events "$(MAX_EVENTS)" --metrics-port "$(METRICS_PORT)"
 
 consumer:
-	python3 -m consumer.main
+	cd server && go run ./cmd/inference --bootstrap-servers "$(BOOTSTRAP_SERVERS)" --group-id "$(if $(GROUP_ID),$(GROUP_ID),gatv2-inference-group)" --mock-score "$(MOCK_SCORE)" --mock-threshold "$(MOCK_THRESHOLD)" --model-version "$(MODEL_VERSION)" --max-retries "$(MAX_RETRIES)" --metrics-port "$(METRICS_PORT)"
 
 raw-sink:
-	python3 -m sink.main --kind raw
+	cd server && go run ./cmd/sink --kind raw --bootstrap-servers "$(BOOTSTRAP_SERVERS)" --group-id "$(if $(GROUP_ID),$(GROUP_ID),mongodb-raw-sink-group)" --max-retries "$(MAX_RETRIES)" --metrics-port "$(METRICS_PORT)"
 
 prediction-sink:
-	python3 -m sink.main --kind prediction
+	cd server && go run ./cmd/sink --kind prediction --bootstrap-servers "$(BOOTSTRAP_SERVERS)" --group-id "$(if $(GROUP_ID),$(GROUP_ID),mongodb-sink-group)" --max-retries "$(MAX_RETRIES)" --metrics-port "$(METRICS_PORT)"
 
 alert-consumer:
-	python3 -m sink.main --kind alert
+	cd server && go run ./cmd/sink --kind alert --bootstrap-servers "$(BOOTSTRAP_SERVERS)" --group-id "$(if $(GROUP_ID),$(GROUP_ID),alert-group)" --max-retries "$(MAX_RETRIES)" --metrics-port "$(METRICS_PORT)"
 
 web:
 	cd web && npm run dev
@@ -67,6 +76,13 @@ build:
 	cd server && go build ./...
 
 contracts-test:
+	$(MAKE) go-test
+	$(MAKE) python-legacy-test
+
+go-test:
+	cd server && go test ./...
+
+python-legacy-test:
 	python3 -m unittest discover -s tests -p 'test_*.py'
 
 pipeline-test:
