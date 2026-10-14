@@ -3,6 +3,86 @@
 Hệ thống phát hiện giao dịch tài chính bất thường trên PaySim sử dụng Kafka,
 MongoDB, GATv2 và React Dashboard.
 
+## Demo đơn giản: một server + một client + Locust
+
+Go server tại `server/cmd/app` chạy API và ba worker nền trong **một process**:
+
+```text
+Locust → POST /api/v1/transactions → KurrentDB (save trước)
+                                      ├─ projection worker → MongoDB
+                                      └─ relay worker → Kafka transactions.raw
+                                                          ↓
+                                                     mock model worker
+                                                          ↓
+                                                      KurrentDB
+                                                          ↓
+                                      projection worker → MongoDB predictions/alerts
+React dashboard ← GET API ← MongoDB
+```
+
+Relay cũng chuyển scored/anomaly/DLQ sang Kafka để giữ các topic kết quả.
+Projection đọc **trực tiếp KurrentDB**, không phụ thuộc Kafka/model. Hai worker
+có persistent subscription/checkpoint riêng. Khi Kafka lỗi, transaction vẫn có
+thể hiện trên UI với trạng thái `pending`; khi model hoàn tất, thành `normal`
+hoặc `anomaly`. API trả **202 chỉ sau KurrentDB xác nhận**, không đợi scoring.
+
+Tại thư mục gốc project:
+
+```bash
+make demo-infra
+# Terminal 1: API + tất cả worker, không cần các terminal relay/sink/consumer
+make server MOCK_SCORE=0.95 MOCK_THRESHOLD=0.8 MODEL_VERSION=demo-v1
+# Terminal 2 (npm ci trong web khi chạy lần đầu):
+make web
+# Terminal 3 (cài một lần):
+python3 -m venv .venv  # chỉ khi chưa có .venv
+.venv/bin/pip install -r requirements-locust.txt
+make locust
+```
+
+- Dashboard: http://localhost:5173 (tự refresh).
+- Locust: http://localhost:8089 — thử 5 users, spawn rate 1 trước khi tăng tải.
+- API: http://localhost:8080.
+- Đây là **mock fixed score**, không phải độ chính xác GATv2; Locust tạo dữ liệu
+  synthetic để đo HTTP/delivery, không phục vụ đánh giá ML.
+- Dừng các process runtime cũ trước khi chạy server mới, nhất là inference và
+  relay: chạy hai cấu hình model khác nhau cùng version có thể gây conflict.
+- `make api` và các command riêng vẫn giữ cho debug/legacy; **demo dùng `make server`**.
+- Không có auth/TLS/rate limit cho ingestion MVP; chỉ chạy local/trusted network.
+
+Gửi một transaction bằng curl (không gửi labels):
+
+```bash
+ID="http-demo-$(date +%s)"
+curl -i http://localhost:8080/api/v1/transactions \
+  -H 'Content-Type: application/json' \
+  -d "{\"schemaVersion\":2,\"transactionId\":\"$ID\",\"sourceRowIndex\":1,\"step\":1,\"type\":\"TRANSFER\",\"amount\":20,\"nameOrig\":\"C1\",\"nameDest\":\"C2\",\"oldbalanceOrg\":200,\"newbalanceOrig\":180,\"oldbalanceDest\":0,\"newbalanceDest\":20}"
+curl http://localhost:8080/api/v1/summary
+```
+
+`transactionId` là idempotency key: retry cùng ID và cùng body → 202, không thêm
+event; cùng ID nhưng khác nội dung → 409; invalid/labels → 400; event store lỗi
+→ 503. Nếu timeout không biết append đã thành công chưa, retry giữ nguyên ID và
+body. Giới hạn body 64 KiB. HTTP nhận giao dịch online theo thứ tự append, không
+sort toàn bộ request theo `step`; preprocessing/graph ordering của model thật
+vẫn cần chốt. `GET /readyz` hiện kiểm tra MongoDB, không báo worker lag/parked.
+
+Kiểm thử server một process, độc lập Kafka và recovery:
+
+```bash
+make demo-infra
+python3 scripts/app-smoke.py
+```
+
+Test dùng port 18080 và namespace/topics/database riêng, giữ dữ liệu để kiểm tra.
+Delivery at-least-once; upsert MongoDB và ID ổn định chống trùng khi retry.
+Scored/anomaly hiện append riêng: nếu crash giữa hai append, retry hoàn tất
+output còn thiếu trước commit Kafka offset; không hứa atomic multi-stream.
+Subscription có thể park sau nhiều timeout; kiểm tra/replay parked trong
+KurrentDB UI. Không xóa event source-of-truth khi rebuild projection.
+
+Các mục command riêng bên dưới dành cho replay/debug, không cần để chạy demo này.
+
 ## Trạng thái triển khai
 
 - Phase 9: Offline scored-prediction evaluation
@@ -53,7 +133,7 @@ go mod download
 cd ..
 ```
 
-Python environment chỉ cần cho offline pipeline và evaluation.
+Python environment dùng cho offline pipeline/evaluation và Locust, không cho Go server.
 
 Go runtime yêu cầu Go theo `server/go.mod` (hiện 1.26); Go có thể tự tải toolchain.
 

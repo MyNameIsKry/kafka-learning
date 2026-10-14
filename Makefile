@@ -9,6 +9,7 @@ GROUND_TRUTH ?= data/ground_truth.csv
 BOOTSTRAP_SERVERS ?= localhost:9092
 KURRENTDB ?= kurrentdb://localhost:2113?tls=false
 RELAY_GROUP ?= financial-kafka-relay
+LOCUST ?= .venv/bin/locust
 GROUP_ID ?=
 MODEL_VERSION ?= mock-v1
 MOCK_SCORE ?= 0.1
@@ -23,6 +24,9 @@ METRICS_PORT ?= 0
 help:
 	@printf '%s\n' \
 	  'Go runtime / KurrentDB pipeline:' \
+	  '  make demo-infra           Start infrastructure for the unified server' \
+	  '  make server               Run API, projection, relay and mock model together' \
+	  '  make locust               Send HTTP transactions (install requirements-locust.txt)' \
 	  '  make kafka-up             Start KurrentDB, Kafka, Kafka UI and MongoDB' \
 	  '  make event-relay          Relay persisted KurrentDB events to Kafka' \
 	  '  make api|web              Run API or dashboard' \
@@ -60,6 +64,15 @@ topics:
 
 api:
 	cd server && go run ./cmd/api
+
+.PHONY: demo-infra server locust
+demo-infra: kafka-up
+
+server:
+	cd server && go run ./cmd/app --eventstore "$(KURRENTDB)" --bootstrap-servers "$(BOOTSTRAP_SERVERS)" --mock-score "$(MOCK_SCORE)" --mock-threshold "$(MOCK_THRESHOLD)" --model-version "$(MODEL_VERSION)"
+
+locust:
+	$(LOCUST) -f locustfile.py --host http://localhost:8080
 
 producer:
 	test -n "$(CSV)" || (echo "Usage: make producer CSV=path/to/PS_*.csv" && exit 1)

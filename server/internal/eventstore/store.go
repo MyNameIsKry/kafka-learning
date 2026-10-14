@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"reflect"
 	"time"
@@ -16,6 +17,8 @@ import (
 
 const DefaultConnection = "kurrentdb://localhost:2113?tls=false"
 const Prefix = "financial-anomaly-event-"
+
+var ErrConflict = errors.New("conflicting immutable event")
 
 type Envelope struct {
 	SchemaVersion int             `json:"schemaVersion"`
@@ -103,7 +106,7 @@ func (w *Writer) WriteMessages(ctx context.Context, messages ...kafka.Message) e
 		}
 		var previous Envelope
 		if json.Unmarshal(existing.OriginalEvent().Data, &previous) != nil || !Equivalent(previous, envelope) {
-			return fmt.Errorf("conflicting immutable event %s", id)
+			return fmt.Errorf("%w %s", ErrConflict, id)
 		}
 	}
 	return nil
