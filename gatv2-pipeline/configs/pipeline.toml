@@ -1,0 +1,13 @@
+[dataset]
+input_csv = "data/PS_20174392719_1.csv"
+output_dir = "artifacts/paysim"
+dataset_version = "paysim-v1"
+
+[split]
+train_fraction = 0.70
+validation_fraction = 0.15
+test_fraction = 0.15
+
+[pipeline]
+stages = ["load", "validate_clean", "chronological_split", "export"]
+

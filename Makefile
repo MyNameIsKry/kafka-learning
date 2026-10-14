@@ -1,4 +1,4 @@
-.PHONY: kafka-up kafka-down gateway inventory email shipping inventory-2 web vet build
+.PHONY: kafka-up kafka-down gateway inventory email shipping inventory-2 web vet build paysim-pipeline
 
 kafka-up:
 	docker compose up -d
@@ -29,3 +29,6 @@ vet:
 
 build:
 	cd server && go build ./...
+
+paysim-pipeline:
+	cd gatv2-pipeline && python -m paysim_pipeline.cli --config configs/pipeline.toml
