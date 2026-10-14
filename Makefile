@@ -18,7 +18,7 @@ DATASET_VERSION ?=
 MAX_EVENTS ?= 0
 METRICS_PORT ?= 0
 
-.PHONY: help kafka-up kafka-down topics api producer consumer raw-sink prediction-sink alert-consumer web vet build contracts-test go-test python-legacy-test paysim-pipeline pipeline-test benchmark evaluate shell dataset-download dataset-check prepare test train
+.PHONY: help kafka-up kafka-down topics api producer consumer raw-sink prediction-sink alert-consumer web vet build contracts-test go-test python-legacy-test paysim-pipeline pipeline-test benchmark evaluate shell dataset-download dataset-check prepare test train eda
 
 help:
 	@printf '%s\n' \
@@ -33,9 +33,17 @@ help:
 	  '  make benchmark RAW_TOPIC=... SCORED_TOPIC=...' \
 	  '  make evaluate GROUND_TRUTH=... PREDICTIONS=... THRESHOLD=...' \
 	  '' \
-	  'Offline PaySim pipeline:' \
-	  '  make dataset-download     Fetch PaySim with the Nix shell' \
-	  '  make prepare              Validate, split and export artifacts' \
+	  'PaySim pipeline:' \
+	  '  make shell               Enter the Nix PaySim development shell' \
+	  '  make dataset-download    Fetch and extract PaySim from Kaggle' \
+	  '  make dataset-check       Check that the CSV exists' \
+	  '  make eda                 Generate pre-clean EDA report only' \
+	  '  make prepare             Clean, split, and export train artifacts' \
+	  '  make test                Run PaySim pipeline unit tests' \
+	  '  make train               Prepare data, then run the configured trainer' \
+	  '' \
+	  'Overrides: PAYSIM_DATA_DIR, PAYSIM_CSV, PIPELINE_CONFIG,' \
+	  '           PIPELINE_OUTPUT_DIR, TRAIN_MODULE, TRAIN_CONFIG'
 	  '  make pipeline-test        Run parity tests' \
 	  '  make train                Prepare data, then run configured trainer'
 
@@ -114,6 +122,13 @@ dataset-download:
 
 dataset-check:
 	test -f $(PAYSIM_CSV) || (echo "Không tìm thấy $(PAYSIM_CSV); chạy 'make dataset-download' hoặc đặt PAYSIM_CSV đúng đường dẫn." >&2; exit 1)
+
+eda: dataset-check
+	$(NIX) develop .#paysim --command env PYTHONPATH=gatv2-pipeline/src python -m paysim_pipeline.cli \
+		--config $(PIPELINE_CONFIG) \
+		--input-csv $(abspath $(PAYSIM_CSV)) \
+		--output-dir $(abspath $(PIPELINE_OUTPUT_DIR)) \
+		--eda-only
 
 prepare: dataset-check
 	$(NIX) develop .#paysim --command env PYTHONPATH=gatv2-pipeline/src python -m paysim_pipeline.cli --config $(PIPELINE_CONFIG) --input-csv $(abspath $(PAYSIM_CSV)) --output-dir $(abspath $(PIPELINE_OUTPUT_DIR))
