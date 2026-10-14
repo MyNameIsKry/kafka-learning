@@ -18,9 +18,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/segmentio/kafka-go"
-
 	"server/internal/events"
+	"server/internal/eventstore"
 	"server/internal/kafkaio"
 	pipelinemetrics "server/internal/metrics"
 )
@@ -115,7 +114,8 @@ func main() {
 	var (
 		csvPath         = flag.String("csv", "", "PaySim CSV path")
 		groundTruthPath = flag.String("ground-truth-path", "data/ground_truth.csv", "offline ground truth output")
-		brokers         = flag.String("bootstrap-servers", "localhost:9092", "Kafka bootstrap servers")
+		connection      = flag.String("eventstore", eventstore.DefaultConnection, "KurrentDB connection string")
+		prefix          = flag.String("stream-prefix", eventstore.Prefix, "event stream namespace")
 		topic           = flag.String("topic", "transactions.raw", "raw Kafka topic")
 		eventsPerSecond = flag.Float64("events-per-second", 0, "replay rate; zero means unthrottled")
 		datasetVersion  = flag.String("dataset-version", "", "optional dataset ID segment")
@@ -147,8 +147,13 @@ func main() {
 		return
 	}
 
-	writer := kafkaio.NewWriter(kafkaio.Brokers(*brokers), *topic)
+	writer, err := eventstore.NewWriter(*connection, *topic)
+	if err != nil {
+		log.Fatal(err)
+	}
 	defer writer.Close()
+	writer.StreamPrefix = *prefix
+	writer.EventType = "RawTransactionRecorded"
 	metrics, err := pipelinemetrics.New("producer", *metricsPort)
 	if err != nil {
 		log.Fatal(err)
@@ -157,7 +162,7 @@ func main() {
 	if err := replay(context.Background(), source, writer, *topic, *groundTruthPath, *eventsPerSecond, metrics); err != nil {
 		log.Fatal(err)
 	}
-	log.Printf("replay finished: published=%d", source.count)
+	log.Printf("replay finished: eventstore_appended=%d", source.count)
 }
 
 func readPaySim(path, datasetVersion string, maxEvents, chunkSize int) (*preparedSource, error) {
@@ -342,7 +347,7 @@ func writeGroundTruth(source *preparedSource, path string) error {
 	})
 }
 
-func replay(ctx context.Context, source *preparedSource, writer *kafka.Writer, topic, groundTruthPath string, rate float64, metrics *pipelinemetrics.Metrics) error {
+func replay(ctx context.Context, source *preparedSource, writer kafkaio.Publisher, topic, groundTruthPath string, rate float64, metrics *pipelinemetrics.Metrics) error {
 	return withAtomicFile(groundTruthPath, func(csvWriter *csv.Writer) error {
 		if err := csvWriter.Write([]string{"transactionId", "step", "isFraud", "isFlaggedFraud"}); err != nil {
 			return err
@@ -369,7 +374,7 @@ func replay(ctx context.Context, source *preparedSource, writer *kafka.Writer, t
 				return fmt.Errorf("publish %s: %w", record.Raw.TransactionID, err)
 			}
 			metrics.Delivery(time.Since(started).Seconds())
-			metrics.Published(topic)
+			metrics.Appended(topic)
 			if err := csvWriter.Write([]string{
 				record.Truth.TransactionID, strconv.FormatInt(record.Truth.Step, 10),
 				strconv.Itoa(record.Truth.IsFraud), strconv.Itoa(record.Truth.IsFlaggedFraud),

@@ -9,6 +9,7 @@ import (
 
 	"github.com/segmentio/kafka-go"
 	"server/internal/events"
+	"server/internal/eventstore"
 	"server/internal/kafkaio"
 	pipelinemetrics "server/internal/metrics"
 	mongostore "server/internal/mongo"
@@ -29,6 +30,8 @@ func main() {
 	var (
 		kind        = flag.String("kind", "", "raw, prediction or alert")
 		brokers     = flag.String("bootstrap-servers", "localhost:9092", "Kafka bootstrap servers")
+		connection  = flag.String("eventstore", eventstore.DefaultConnection, "KurrentDB connection string")
+		prefix      = flag.String("stream-prefix", eventstore.Prefix, "event stream namespace")
 		topic       = flag.String("topic", "", "optional input topic override")
 		group       = flag.String("group-id", "", "optional consumer group override")
 		mongoURI    = flag.String("mongo-uri", "mongodb://localhost:27017", "MongoDB URI")
@@ -57,7 +60,10 @@ func main() {
 		StartOffset: kafka.FirstOffset, MinBytes: 1, MaxBytes: 10e6,
 		MaxWait: 250 * time.Millisecond,
 	})
-	dlqWriter := kafkaio.NewWriter(addresses, *dlqTopic)
+	dlqWriter, err := eventstore.NewWriter(*connection, *dlqTopic)
+	if err != nil {
+		log.Fatal(err)
+	}
 	store, err := mongostore.New(context.Background(), *mongoURI, *mongoDB)
 	if err != nil {
 		log.Fatalf("connect MongoDB: %v", err)
@@ -68,6 +74,8 @@ func main() {
 	}
 	defer reader.Close()
 	defer dlqWriter.Close()
+	dlqWriter.StreamPrefix = *prefix
+	dlqWriter.EventType = "InvalidEventRecorded"
 	defer store.Close(context.Background())
 	defer metrics.Close(context.Background())
 
@@ -86,7 +94,7 @@ func main() {
 	}
 }
 
-func processWithRetry(ctx context.Context, reader *kafka.Reader, message kafka.Message, kind string, store *mongostore.Store, dlqWriter *kafka.Writer, maxRetries int, metrics *pipelinemetrics.Metrics) error {
+func processWithRetry(ctx context.Context, reader *kafka.Reader, message kafka.Message, kind string, store *mongostore.Store, dlqWriter kafkaio.Publisher, maxRetries int, metrics *pipelinemetrics.Metrics) error {
 	for attempt := 0; ; attempt++ {
 		started := time.Now()
 		err := processMessage(ctx, message, kind, store, dlqWriter, metrics)
@@ -112,7 +120,7 @@ func processWithRetry(ctx context.Context, reader *kafka.Reader, message kafka.M
 	}
 }
 
-func processMessage(ctx context.Context, message kafka.Message, kind string, store *mongostore.Store, dlqWriter *kafka.Writer, metrics *pipelinemetrics.Metrics) error {
+func processMessage(ctx context.Context, message kafka.Message, kind string, store *mongostore.Store, dlqWriter kafkaio.Publisher, metrics *pipelinemetrics.Metrics) error {
 	switch kind {
 	case "raw":
 		event, err := events.DecodeRaw(message.Value)
@@ -149,7 +157,7 @@ func processMessage(ctx context.Context, message kafka.Message, kind string, sto
 	}
 }
 
-func publishDLQ(ctx context.Context, writer *kafka.Writer, message kafka.Message, code, detail string) error {
+func publishDLQ(ctx context.Context, writer kafkaio.Publisher, message kafka.Message, code, detail string) error {
 	event := events.DLQEvent{
 		SourceTopic: message.Topic, SourcePartition: message.Partition, SourceOffset: message.Offset,
 		ErrorCode: code, ErrorMessage: detail, FailedAt: time.Now().UTC(),

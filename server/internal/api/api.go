@@ -60,7 +60,7 @@ type Reader interface {
 	Alerts(context.Context, int) ([]Alert, error)
 }
 
-func NewHandler(reader Reader, corsOrigin string) http.Handler {
+func NewHandler(reader Reader, corsOrigin string, ingestion ...TransactionAppender) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", healthHandler)
 	mux.HandleFunc("GET /readyz", readyHandler(reader))
@@ -68,6 +68,9 @@ func NewHandler(reader Reader, corsOrigin string) http.Handler {
 	mux.HandleFunc("GET /api/v1/metrics", summaryHandler(reader))
 	mux.HandleFunc("GET /api/v1/transactions", transactionsHandler(reader))
 	mux.HandleFunc("GET /api/v1/alerts", alertsHandler(reader))
+	if len(ingestion) > 0 {
+		mux.HandleFunc("POST /api/v1/transactions", createTransactionHandler(ingestion[0]))
+	}
 
 	return withCORS(mux, corsOrigin)
 }
@@ -179,7 +182,7 @@ func withCORS(next http.Handler, origin string) http.Handler {
 		}
 		w.Header().Set("Access-Control-Allow-Origin", allowedOrigin)
 		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
-		w.Header().Set("Access-Control-Allow-Methods", "GET, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)
 			return
