@@ -1,25 +1,36 @@
-.PHONY: kafka-up kafka-down gateway inventory email shipping inventory-2 web vet build
+.PHONY: kafka-up kafka-down topics api producer consumer raw-sink prediction-sink alert-consumer web vet build contracts-test
+
+GROUND_TRUTH ?= data/ground_truth.csv
 
 kafka-up:
-	docker compose up -d
+	docker compose run --rm --no-deps kafka-volume-init
+	docker compose up -d kafka kafka-ui mongo
+	$(MAKE) topics
 
 kafka-down:
 	docker compose down
 
-gateway:
-	cd server && go run ./cmd/gateway
+topics:
+	docker compose run --rm --no-deps kafka-init
 
-inventory:
-	cd server && go run ./cmd/inventory
+api:
+	cd server && go run ./cmd/api
 
-email:
-	cd server && WORK_MS=700 go run ./cmd/email
+producer:
+	test -n "$(CSV)" || (echo "Usage: make producer CSV=path/to/PS_*.csv" && exit 1)
+	python3 -m producer.main --csv "$(CSV)" --ground-truth-path "$(GROUND_TRUTH)"
 
-shipping:
-	cd server && WORK_MS=400 go run ./cmd/shipping
+consumer:
+	python3 -m consumer.main
 
-inventory-2:
-	cd server && ADDR=:8084 INSTANCE=inventory-2 go run ./cmd/inventory
+raw-sink:
+	python3 -m sink.main --kind raw
+
+prediction-sink:
+	python3 -m sink.main --kind prediction
+
+alert-consumer:
+	python3 -m sink.main --kind alert
 
 web:
 	cd web && npm run dev
@@ -29,3 +40,6 @@ vet:
 
 build:
 	cd server && go build ./...
+
+contracts-test:
+	python3 -m unittest discover -s tests -p 'test_*.py'
