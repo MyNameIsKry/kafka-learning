@@ -17,16 +17,31 @@ Pipeline chuẩn bị dữ liệu offline theo `financial_anomaly_kafka_paysim_d
 
 ## Run
 
-Python 3.11+.
+Python 3.11+ (Nix dev shell dùng Python 3.12).
 
 ```sh
-cd gatv2-pipeline
-python -m venv .venv
-. .venv/bin/activate
-pip install -e .
-# Sửa input_csv trong configs/pipeline.toml trỏ tới PaySim CSV.
-paysim-pipeline --config configs/pipeline.toml
+nix develop .#paysim
+# Từ thư mục gốc repo; Makefile tự cấu hình đường dẫn dataset/output.
+PYTHONPATH=gatv2-pipeline/src python -m paysim_pipeline.cli --config gatv2-pipeline/configs/pipeline.toml
 ```
+
+Từ thư mục gốc repo, Makefile hỗ trợ các bước thường dùng. Nix flake cung cấp Python, pandas và pyarrow; không cần pip hay Kaggle CLI:
+
+```sh
+make dataset-download       # tạo data/ và fetch public dataset từ Kaggle
+make dataset-check
+make prepare                # chạy pipeline trong Nix dev shell
+make train                  # hiện báo thiếu module train; model chưa được triển khai
+```
+
+Có thể đổi đường dẫn mà không sửa TOML:
+
+```sh
+make dataset-download PAYSIM_DATA_DIR=/data/paysim
+make prepare PAYSIM_CSV=/data/paysim/PS_20174392719_1491204439457_log.csv
+```
+
+`make train` mặc định tìm `paysim_pipeline.train` với config `gatv2-pipeline/configs/train.toml`; đổi bằng `TRAIN_MODULE` và `TRAIN_CONFIG` khi bổ sung trainer. Target chạy `prepare` trước để train luôn nhận artifact mới nhất. Dataset công khai được tải trực tiếp từ Kaggle; không cần token/API key.
 
 Có thể dùng config TOML khác. Đường dẫn tương đối được tính từ thư mục `gatv2-pipeline`; output mặc định ở `artifacts/paysim/`.
 
