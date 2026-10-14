@@ -9,8 +9,14 @@ from paysim_pipeline.stages import chronological_split, export, load, validate_c
 def main() -> None:
     parser = argparse.ArgumentParser(description="Prepare leakage-aware PaySim train/validation/test artifacts")
     parser.add_argument("--config", type=Path, default=Path("configs/pipeline.toml"))
+    parser.add_argument("--input-csv", type=Path, help="Override dataset.input_csv from TOML")
+    parser.add_argument("--output-dir", type=Path, help="Override dataset.output_dir from TOML")
     args = parser.parse_args()
     config = load_config(args.config.resolve())
+    if args.input_csv:
+        config = config.__class__(**{**config.__dict__, "input_csv": args.input_csv.resolve()})
+    if args.output_dir:
+        config = config.__class__(**{**config.__dict__, "output_dir": args.output_dir.resolve()})
     print(f"[load] {config.input_csv}")
     source = load.run(config.input_csv)
     print(f"[validate_clean] {len(source):,} rows")
