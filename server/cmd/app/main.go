@@ -4,18 +4,18 @@ import (
 	"context"
 	"errors"
 	"flag"
+	"fmt"
 	"log"
-	"math"
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"sync"
 	"syscall"
 	"time"
 
 	"github.com/segmentio/kafka-go"
 	"server/internal/api"
-	"server/internal/events"
 	"server/internal/eventstore"
 	"server/internal/inference"
 	"server/internal/kafkaio"
@@ -38,20 +38,18 @@ func run() error {
 	uri := flag.String("mongo-uri", env("MONGO_URI", "mongodb://localhost:27017"), "Mongo URI")
 	group := flag.String("group-prefix", "financial-app", "durable worker group namespace")
 	topic := flag.String("topic-prefix", "transactions", "Kafka topic namespace")
-	score := flag.Float64("mock-score", 0.1, "fixed demo score; not ML quality")
-	threshold := flag.Float64("mock-threshold", 0.8, "explicit mock threshold")
-	version := flag.String("model-version", "mock-v1", "model version")
+	modelPath := flag.String("model-path", env("MODEL_PATH", "gatv2-pipeline/artifacts/mock/anomaly_score.onnx"), "ONNX model path")
+	threshold := flag.Float64("threshold", envFloat("ANOMALY_THRESHOLD", 0.8), "anomaly score threshold")
+	version := flag.String("model-version", env("MODEL_VERSION", "mock-onnx-v1"), "model version")
 	flag.Parse()
 	if *prefix == "" || *group == "" || *topic == "" {
 		return errors.New("namespaces must not be empty")
 	}
-	if math.IsNaN(*threshold) || math.IsInf(*threshold, 0) {
-		return errors.New("mock threshold must be finite")
+	engine, err := inference.NewONNXEngine(*modelPath, *threshold, *version)
+	if err != nil {
+		return fmt.Errorf("initialize ONNX inference: %w", err)
 	}
-	engine := inference.MockEngine{Score: *score, Threshold: *threshold, ModelVersion: *version}
-	if _, err := engine.Predict([]events.ModelInputDTO{{TransactionID: "validation", Step: 1}}); err != nil {
-		return err
-	}
+	defer engine.Close()
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 	startup, stop := context.WithTimeout(ctx, 10*time.Second)
@@ -108,7 +106,7 @@ func run() error {
 		}
 		return err
 	})
-	log.Printf("server %s: API + KurrentDB projection + Kafka relay + mock model (score=%g threshold=%g)", *addr, *score, *threshold)
+	log.Printf("server %s: API + KurrentDB projection + Kafka relay + ONNX model=%s threshold=%g version=%s", *addr, *modelPath, *threshold, *version)
 	<-ctx.Done()
 	shutdown, done := context.WithTimeout(context.Background(), 30*time.Second)
 	err = server.Shutdown(shutdown)
@@ -130,4 +128,16 @@ func env(key, fallback string) string {
 		return value
 	}
 	return fallback
+}
+
+func envFloat(key string, fallback float64) float64 {
+	value := os.Getenv(key)
+	if value == "" {
+		return fallback
+	}
+	parsed, err := strconv.ParseFloat(value, 64)
+	if err != nil {
+		return fallback
+	}
+	return parsed
 }

@@ -58,7 +58,8 @@ flowchart TB
   projection worker → MongoDB, không phụ thuộc Kafka. Sinks Kafka cũ giữ cho debug.
   Stream event bất biến dùng ID ổn định và expected revision NoStream; payload
   xung đột phải fail, không overwrite. Labels chỉ offline, không vào event store.
-- GATv2 được tích hợp qua Go inference interface trước; MVP dùng mock engine.
+- GATv2 được tích hợp qua Go inference interface trước; MVP hiện dùng ONNX mock
+  engine để kiểm tra contract/runtime, chưa phải checkpoint GATv2 đã train.
   Việc đưa checkpoint/model thật vào interface vẫn thuộc phạm vi AI.
 
 ### Demo runtime một process

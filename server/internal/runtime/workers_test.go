@@ -4,12 +4,27 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/segmentio/kafka-go"
 	"server/internal/events"
 	"server/internal/eventstore"
 	"server/internal/inference"
 )
+
+type testEngine struct{}
+
+func (testEngine) Predict(inputs []events.ModelInputDTO) ([]events.TransactionPredictionEvent, error) {
+	result := make([]events.TransactionPredictionEvent, 0, len(inputs))
+	for _, input := range inputs {
+		result = append(result, events.TransactionPredictionEvent{
+			SchemaVersion: events.PredictionSchemaVersion, TransactionID: input.TransactionID,
+			Step: input.Step, AnomalyScore: 0.95, IsAnomaly: true, ModelVersion: "test-engine",
+			ProcessedAt: time.Now().UTC(), ReasonCodes: []string{},
+		})
+	}
+	return result, nil
+}
 
 type memoryProjection struct{ raw, prediction, alert int }
 
@@ -61,7 +76,7 @@ func TestInferencePersistsBothOutputsAndProjects(t *testing.T) {
 	payload, _ := events.Encode(raw)
 	message := kafka.Message{Value: payload}
 	scored, anomaly, dlq := &publisher{}, &publisher{err: errors.New("store down")}, &publisher{}
-	engine := inference.MockEngine{Score: .95, Threshold: .8, ModelVersion: "test"}
+	var engine inference.Engine = testEngine{}
 	if err := Infer(context.Background(), engine, message, scored, anomaly, dlq); err == nil {
 		t.Fatal("partial persistence must fail")
 	}
@@ -85,7 +100,7 @@ func TestInferencePersistsBothOutputsAndProjects(t *testing.T) {
 
 func TestInferenceDLQStoreFirst(t *testing.T) {
 	scored, anomaly, dlq := &publisher{}, &publisher{}, &publisher{}
-	if err := Infer(context.Background(), inference.MockEngine{}, kafka.Message{Topic: "raw", Value: []byte(`{"isFraud":1}`)}, scored, anomaly, dlq); err != nil {
+	if err := Infer(context.Background(), testEngine{}, kafka.Message{Topic: "raw", Value: []byte(`{"isFraud":1}`)}, scored, anomaly, dlq); err != nil {
 		t.Fatal(err)
 	}
 	if len(dlq.messages) != 1 || len(scored.messages) != 0 {

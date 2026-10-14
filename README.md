@@ -12,7 +12,7 @@ Locust → POST /api/v1/transactions → KurrentDB (save trước)
                                       ├─ projection worker → MongoDB
                                       └─ relay worker → Kafka transactions.raw
                                                           ↓
-                                                     mock model worker
+                                                      ONNX mock model worker
                                                           ↓
                                                       KurrentDB
                                                           ↓
@@ -31,7 +31,7 @@ Tại thư mục gốc project:
 ```bash
 make demo-infra
 # Terminal 1: API + tất cả worker, không cần các terminal relay/sink/consumer
-make server MOCK_SCORE=0.95 MOCK_THRESHOLD=0.8 MODEL_VERSION=demo-v1
+make server ANOMALY_THRESHOLD=0.3 MODEL_VERSION=mock-onnx-demo
 # Terminal 2 (npm ci trong web khi chạy lần đầu):
 make web
 # Terminal 3 (cài một lần):
@@ -43,8 +43,9 @@ make locust
 - Dashboard: http://localhost:5173 (tự refresh).
 - Locust: http://localhost:8089 — thử 5 users, spawn rate 1 trước khi tăng tải.
 - API: http://localhost:8080.
-- Đây là **mock fixed score**, không phải độ chính xác GATv2; Locust tạo dữ liệu
-  synthetic để đo HTTP/delivery, không phục vụ đánh giá ML.
+- Server dùng **ONNX mock model** với input tensor `[batch, 7]`, không phải độ
+  chính xác GATv2; Locust tạo dữ liệu synthetic để đo HTTP/delivery, không phục
+  vụ đánh giá ML.
 - Dừng các process runtime cũ trước khi chạy server mới, nhất là inference và
   relay: chạy hai cấu hình model khác nhau cùng version có thể gây conflict.
 - `make api` và các command riêng vẫn giữ cho debug/legacy; **demo dùng `make server`**.
@@ -89,11 +90,12 @@ Các mục command riêng bên dưới dành cho replay/debug, không cần đ�
 - KurrentDB, Kafka KRaft, Kafka UI và MongoDB chạy bằng Docker Compose.
 - Các topic PaySim được tạo với một partition cho MVP.
 - MongoDB sẵn sàng; collections được tạo tự động khi sink khởi động.
-- Go runtime contracts, PaySim replay producer, mock inference consumer, raw
+- Go runtime contracts, PaySim replay producer, ONNX inference consumer, raw
   sink, prediction sink và alert consumer đã được triển khai.
 - KurrentDB là event store/source of truth. Go relay chuyển event sang Kafka;
   MongoDB chỉ là read-model projection.
-- Metrics vận hành và benchmark runner đã có; model GATv2 thật và graph-state recovery chưa tích hợp.
+- Metrics vận hành và benchmark runner đã có; GATv2 thật và graph-state recovery
+  chưa tích hợp. ONNX mock đã được dùng trong unified server.
 
 ## Khởi động infrastructure
 
@@ -171,20 +173,24 @@ chunk giới hạn bộ nhớ và publish theo thứ tự đó. Khi delivery
 failure, producer dừng mặc định để không bỏ qua event giữa chuỗi.
 Producer không gửi trực tiếp vào Kafka: append KurrentDB thành công trước.
 
-## Inference consumer với mock predictor
+## Inference consumer với ONNX mock predictor
 
 Chạy consumer sau khi infrastructure đã khởi động:
 
 ```bash
 (cd server && go run ./cmd/inference \
-  --mock-score 0.1 \
-  --mock-threshold 0.8)
+  --model-path "$(pwd)/gatv2-pipeline/artifacts/mock/anomaly_score.onnx" \
+  --threshold 0.8 \
+  --model-version mock-onnx-v1)
 ```
 
 Để kiểm tra nhánh anomaly trong wiring test:
 
 ```bash
-(cd server && go run ./cmd/inference --mock-score 0.95 --mock-threshold 0.8)
+(cd server && go run ./cmd/inference \
+  --model-path "$(pwd)/gatv2-pipeline/artifacts/mock/anomaly_score.onnx" \
+  --threshold 0.3 \
+  --model-version mock-onnx-v1)
 ```
 
 Consumer chỉ commit input offset sau khi validation/DLQ, inference và các
@@ -192,7 +198,7 @@ output append cần thiết được KurrentDB acknowledge. Schema lỗi đượ
 `transactions.dlq`; lỗi inference/output sẽ retry với backoff và dừng mà
 không commit sau khi hết retry. Consumer có bounded dedupe cache trong RAM
 (`--dedupe-cache-size`); graph-state/dedupe durable sau restart sẽ được xử lý
-khi tích hợp inference engine thật.
+khi tích hợp GATv2 thật.
 
 ## Phase 5 — MongoDB sinks và alert consumer
 

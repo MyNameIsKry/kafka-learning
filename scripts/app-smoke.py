@@ -17,6 +17,7 @@ RUN = "app-smoke-" + uuid.uuid4().hex
 DIR = pathlib.Path("/tmp/opencode") / RUN
 DIR.mkdir(parents=True)
 BINARY = DIR / "app"
+MODEL = ROOT / "gatv2-pipeline/artifacts/mock/anomaly_score.onnx"
 BASE = "http://localhost:18080"
 
 
@@ -45,10 +46,11 @@ def wait_for(predicate):
 def start(brokers):
     log = open(DIR / f"{brokers.replace(':', '-')}.log", "w")
     process = subprocess.Popen([
-        str(BINARY), "--addr", ":18080", "--mongo-db", RUN,
+        "nix", "develop", ".#paysim", "--command", str(BINARY),
+        "--addr", ":18080", "--mongo-db", RUN,
         "--stream-prefix", RUN + "-event-", "--group-prefix", RUN,
         "--topic-prefix", RUN, "--bootstrap-servers", brokers,
-        "--mock-score", "0.95", "--model-version", RUN,
+        "--model-path", str(MODEL), "--threshold", "0.3", "--model-version", RUN,
     ], stdout=log, stderr=subprocess.STDOUT)
     log.close()
     return process
@@ -69,7 +71,9 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--locust-bin", help="optionally exercise real Locust (absolute binary path)")
     args = parser.parse_args()
-    subprocess.run(["go", "build", "-o", str(BINARY), "./cmd/app"], cwd=ROOT / "server", check=True)
+    if not MODEL.exists():
+        subprocess.run(["make", "mock-onnx-export"], cwd=ROOT, check=True)
+    subprocess.run(["nix", "develop", ".#paysim", "--command", "go", "build", "-o", str(BINARY), "./cmd/app"], cwd=ROOT / "server", check=True)
     for kind in ("raw", "scored", "anomalies", "dlq"):
         subprocess.run([
             "docker", "compose", "exec", "-T", "kafka", "/opt/kafka/bin/kafka-topics.sh",

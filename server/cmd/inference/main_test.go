@@ -4,12 +4,26 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/segmentio/kafka-go"
 	"server/internal/events"
-	"server/internal/inference"
 	"server/internal/metrics"
 )
+
+type testEngine struct{}
+
+func (testEngine) Predict(inputs []events.ModelInputDTO) ([]events.TransactionPredictionEvent, error) {
+	result := make([]events.TransactionPredictionEvent, 0, len(inputs))
+	for _, input := range inputs {
+		result = append(result, events.TransactionPredictionEvent{
+			SchemaVersion: events.PredictionSchemaVersion, TransactionID: input.TransactionID,
+			Step: input.Step, AnomalyScore: 0.95, IsAnomaly: true, ModelVersion: "test-engine",
+			ProcessedAt: time.Now().UTC(), ReasonCodes: []string{},
+		})
+	}
+	return result, nil
+}
 
 type recordingStore struct {
 	messages []kafka.Message
@@ -37,7 +51,7 @@ func TestInferenceAppendsOutputsBeforeRemembering(t *testing.T) {
 		t.Fatal(err)
 	}
 	cache := newDedupeCache(10)
-	engine := inference.MockEngine{Score: .95, Threshold: .8, ModelVersion: "mock-v1"}
+	engine := testEngine{}
 	err = processMessage(context.Background(), message, engine, scored, anomaly, dlq, "scored", "anomaly", cache, m)
 	if err == nil {
 		t.Fatal("store failure must propagate without commit")
@@ -63,7 +77,7 @@ func TestInvalidInputAppendsDLQ(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := processMessage(context.Background(), kafka.Message{Topic: "raw", Value: []byte("invalid")}, inference.MockEngine{}, scored, anomaly, dlq, "scored", "anomaly", newDedupeCache(10), m); err != nil {
+	if err := processMessage(context.Background(), kafka.Message{Topic: "raw", Value: []byte("invalid")}, testEngine{}, scored, anomaly, dlq, "scored", "anomaly", newDedupeCache(10), m); err != nil {
 		t.Fatal(err)
 	}
 	if len(dlq.messages) != 1 || len(scored.messages) != 0 {

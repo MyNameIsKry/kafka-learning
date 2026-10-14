@@ -14,7 +14,9 @@ transactions.raw ── inference consumer (Go + ONNX Runtime)
                          └── payload/schema lỗi ▶ transactions.dlq
 ```
 
-Kafka topics được tạo bởi `make kafka-up`. Raw và prediction Mongo sinks, cùng alert consumer, là các tiến trình riêng; chạy chúng nếu cần lưu/quan sát kết quả.
+Kafka topics được tạo bởi `make kafka-up`. Unified demo dùng `make server` để
+chạy API, projection, relay và ONNX inference trong một process; raw/prediction
+Mongo sinks và alert consumer riêng vẫn giữ cho debug/legacy.
 
 ## Chạy local
 

@@ -11,7 +11,7 @@ KURRENTDB ?= kurrentdb://localhost:2113?tls=false
 RELAY_GROUP ?= financial-kafka-relay
 LOCUST ?= .venv/bin/locust
 GROUP_ID ?=
-MODEL_VERSION ?= mock-v1
+MODEL_VERSION ?= mock-onnx-v1
 ANOMALY_THRESHOLD ?= 0.8
 MODEL_PATH ?= gatv2-pipeline/artifacts/mock/anomaly_score.onnx
 MAX_RETRIES ?= 3
@@ -25,7 +25,7 @@ help:
 	@printf '%s\n' \
 	  'Go runtime / KurrentDB pipeline:' \
 	  '  make demo-infra           Start infrastructure for the unified server' \
-	  '  make server               Run API, projection, relay and mock model together' \
+	  '  make server               Run API, projection, relay and ONNX model together' \
 	  '  make locust               Send HTTP transactions (install requirements-locust.txt)' \
 	  '  make kafka-up             Start KurrentDB, Kafka, Kafka UI and MongoDB' \
 	  '  make event-relay          Relay persisted KurrentDB events to Kafka' \
@@ -35,7 +35,7 @@ help:
 	  '  make consumer             Run ONNX inference consumer (Go)' \
 	  '  make onnx-test            Test ONNX model through Go runtime' \
 	  '  make producer CSV=...     Append PaySim into KurrentDB (Go)' \
-	  '  make consumer             Run mock inference consumer (Go)' \
+	  '  make consumer             Run ONNX inference consumer (Go)' \
 	  '  make raw-sink|prediction-sink|alert-consumer' \
 	  '  make contracts-test       Run Go runtime and Python regression tests' \
 	  '  make benchmark RAW_TOPIC=... SCORED_TOPIC=...' \
@@ -73,7 +73,8 @@ api:
 demo-infra: kafka-up
 
 server:
-	cd server && go run ./cmd/app --eventstore "$(KURRENTDB)" --bootstrap-servers "$(BOOTSTRAP_SERVERS)" --mock-score "$(MOCK_SCORE)" --mock-threshold "$(MOCK_THRESHOLD)" --model-version "$(MODEL_VERSION)"
+	test -f "$(MODEL_PATH)" || $(MAKE) mock-onnx-export MODEL_PATH="$(MODEL_PATH)"
+	$(NIX) develop .#paysim --command bash -c 'cd server && go run ./cmd/app --eventstore "$(KURRENTDB)" --bootstrap-servers "$(BOOTSTRAP_SERVERS)" --model-path "$(abspath $(MODEL_PATH))" --threshold "$(ANOMALY_THRESHOLD)" --model-version "$(MODEL_VERSION)"'
 
 locust:
 	$(LOCUST) -f locustfile.py --host http://localhost:8080
@@ -99,7 +100,6 @@ mock-onnx-export:
 onnx-test: mock-onnx-export
 	$(NIX) develop .#paysim --command env PYTHONPATH=gatv2-pipeline/scripts:$$PYTHONPATH python -m unittest discover -s gatv2-pipeline/tests -p 'test_export_mock_onnx.py' -v
 	$(NIX) develop .#paysim --command bash -c 'cd server && ONNX_MODEL_PATH="$(abspath $(MODEL_PATH))" go test ./internal/inference -run TestONNXEngine -v'
-	cd server && go run ./cmd/inference --eventstore "$(KURRENTDB)" --bootstrap-servers "$(BOOTSTRAP_SERVERS)" --group-id "$(if $(GROUP_ID),$(GROUP_ID),gatv2-inference-group)" --mock-score "$(MOCK_SCORE)" --mock-threshold "$(MOCK_THRESHOLD)" --model-version "$(MODEL_VERSION)" --max-retries "$(MAX_RETRIES)" --metrics-port "$(METRICS_PORT)"
 
 raw-sink:
 	cd server && go run ./cmd/sink --eventstore "$(KURRENTDB)" --kind raw --bootstrap-servers "$(BOOTSTRAP_SERVERS)" --group-id "$(if $(GROUP_ID),$(GROUP_ID),mongodb-raw-sink-group)" --max-retries "$(MAX_RETRIES)" --metrics-port "$(METRICS_PORT)"
