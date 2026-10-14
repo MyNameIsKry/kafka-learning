@@ -1,0 +1,1 @@
+"""Kafka inference consumer package."""
