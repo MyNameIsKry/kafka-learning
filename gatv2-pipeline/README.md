@@ -12,6 +12,8 @@ Pipeline chuẩn bị dữ liệu offline theo `financial_anomaly_kafka_paysim_d
 - `features/*.parquet` chỉ theo whitelist `transactionId, sourceRowIndex, step, type, amount, nameOrig, nameDest`; IDs và step là metadata/graph structure, chưa biến thành vector số.
 - `ground_truth/*.parquet` tách nhãn `isFraud` và `isFlaggedFraud`; balance không xuất hiện trong features. Chỉ dùng nhãn train/validation cho fit/tuning, test chỉ đánh giá cuối.
 - `feature_schema.json` và `manifest.json` mô tả contract, ranh giới step, số hàng và dataset version.
+- Test `gatv2-pipeline/tests/test_pipeline_parity.py` đối chiếu thứ tự cột với `contracts.events.ModelInputDTO`; pipeline fail closed nếu whitelist offline drift.
+- Manifest ghi `rowsInput`, `rowsAccepted`, `rowsRejected` và phân bố `rejectionReasons`; balance consistency không bị dùng làm reject rule tự động.
 
 ## Run
 
@@ -30,9 +32,8 @@ Có thể dùng config TOML khác. Đường dẫn tương đối được tính
 
 ## Explicitly deferred
 
-Graph construction/window semantics, category encoding/scaling fit chỉ trên train, imbalance strategy, model training, threshold selection, metrics/checkpointing, online feature parity adapter. Các quyết định này phụ thuộc GATv2 input/edge-level contract chưa được chốt trong design. Không ghi model giả hoặc metric giả.
+Graph construction/window semantics, category encoding/scaling fit chỉ trên train, imbalance strategy, model training, threshold selection, metrics/checkpointing, online graph-state recovery. Các quyết định này phụ thuộc GATv2 input/edge-level contract chưa được chốt trong design. Không ghi model giả hoặc metric giả.
 
 ## Resource note
 
 Đang dùng pandas eager DataFrame, dễ đọc/đổi stage nhưng cần RAM đủ cho toàn bộ PaySim (khoảng 6.3M dòng). Khi môi trường bị giới hạn RAM, thay stage load/export bằng xử lý chunk/Parquet mà vẫn giữ nguyên split theo `step` và schema contract.
-

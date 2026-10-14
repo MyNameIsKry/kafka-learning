@@ -15,3 +15,12 @@ MODEL_INPUT_COLUMNS = (
 )
 MODEL_VECTOR_CANDIDATES = ("amount", "type")
 
+
+def assert_model_input_columns(columns) -> None:
+    """Fail closed when offline features drift from the Kafka whitelist."""
+
+    actual = tuple(columns)
+    if actual != MODEL_INPUT_COLUMNS:
+        raise ValueError(
+            f"offline ModelInputDTO drift: expected {MODEL_INPUT_COLUMNS}, got {actual}"
+        )

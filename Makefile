@@ -1,4 +1,4 @@
-.PHONY: kafka-up kafka-down topics api producer consumer raw-sink prediction-sink alert-consumer web vet build contracts-test paysim-pipeline
+.PHONY: kafka-up kafka-down topics api producer consumer raw-sink prediction-sink alert-consumer web vet build contracts-test paysim-pipeline pipeline-test benchmark evaluate
 
 GROUND_TRUTH ?= data/ground_truth.csv
 
@@ -46,3 +46,14 @@ contracts-test:
 
 paysim-pipeline:
 	cd gatv2-pipeline && python -m paysim_pipeline.cli --config configs/pipeline.toml
+
+pipeline-test:
+	PYTHONPATH=gatv2-pipeline/src:$$PYTHONPATH python3 -m unittest discover -s gatv2-pipeline/tests -p 'test_*.py'
+
+evaluate:
+	test -n "$(GROUND_TRUTH)" -a -n "$(PREDICTIONS)" -a -n "$(THRESHOLD)" || (echo "Usage: make evaluate GROUND_TRUTH=... PREDICTIONS=... THRESHOLD=..." && exit 1)
+	python3 -m evaluation.main --ground-truth "$(GROUND_TRUTH)" --predictions "$(PREDICTIONS)" --threshold "$(THRESHOLD)" $(if $(OUTPUT),--output "$(OUTPUT)",)
+
+benchmark:
+	test -n "$(RAW_TOPIC)" -a -n "$(SCORED_TOPIC)" || (echo "Usage: make benchmark RAW_TOPIC=bench.raw SCORED_TOPIC=bench.scored" && exit 1)
+	python3 -m benchmark.main --raw-topic "$(RAW_TOPIC)" --scored-topic "$(SCORED_TOPIC)"

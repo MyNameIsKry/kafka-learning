@@ -5,13 +5,13 @@ MongoDB, GATv2 và React Dashboard.
 
 ## Trạng thái triển khai
 
-- Phase 6: MongoDB API and live React dashboard
+- Phase 9: Offline scored-prediction evaluation
 - Kafka KRaft, Kafka UI và MongoDB chạy bằng Docker Compose.
 - Các topic PaySim được tạo với một partition cho MVP.
 - MongoDB sẵn sàng; collections được tạo tự động khi sink khởi động.
 - DTO Python, test chống leakage, PaySim replay producer, mock inference consumer,
   raw sink, prediction sink và alert consumer đã được triển khai.
-- Model GATv2 thật, metrics vận hành và observability nâng cao sẽ được triển khai ở các phase tiếp theo.
+- Metrics vận hành và benchmark runner đã có; model GATv2 thật và graph-state recovery chưa tích hợp.
 
 ## Khởi động infrastructure
 
@@ -199,6 +199,153 @@ Health check backend:
 ```bash
 curl http://localhost:8080/healthz
 ```
+
+## Phase 7 — Metrics và benchmark
+
+Metrics HTTP là opt-in, mặc định tắt (`--metrics-port 0`). Mỗi process dùng
+port riêng, bind loopback mặc định; không export account IDs, balance hoặc
+PaySim labels:
+
+```bash
+python3 -m consumer.main --metrics-port 9101
+python3 -m sink.main --kind raw --metrics-port 9102
+python3 -m sink.main --kind prediction --metrics-port 9103
+python3 -m sink.main --kind alert --metrics-port 9104
+# Thêm --metrics-port 9100 vào producer CLI nếu cần scrape khi replay.
+curl http://127.0.0.1:9101/metrics
+```
+
+Metrics chính:
+
+- `pipeline_published_records_total`: Kafka publish đã acknowledge; gồm publish lặp do retry.
+- `pipeline_stored_records_total`: DB upsert đã acknowledge; không phải unique documents.
+- `pipeline_committed_records_total`: input records trong batches commit thành công.
+- `pipeline_failures_total`, `pipeline_failed_record_attempts_total`, `pipeline_retries_total`:
+  lỗi theo attempt, không phải số giao dịch lỗi duy nhất.
+- `pipeline_delivery_seconds`: thời gian producer send → ack, không gồm rate limiting.
+- `pipeline_inference_seconds`: thời gian gọi engine mỗi attempt, không gồm output publishing.
+- `pipeline_batch_seconds`: xử lý batch và commit, không gồm retry backoff/poll wait.
+- `pipeline_input_to_completion_seconds`: Kafka input timestamp → batch commit thành công.
+  Với prediction/alert sink, điểm bắt đầu là publication của scored/anomaly event,
+  **không** phải raw ingress. Không dùng `step` để tính wall-clock latency.
+- `pipeline_consumer_lag`: log end offset trừ committed offset; sample mỗi 10 giây,
+  dùng earliest retained offset nếu group chưa commit. `pipeline_lag_sample_timestamp_seconds`
+  cho biết sample còn mới hay không; sampling lỗi không commit hoặc retry input batch.
+- `pipeline_last_commit_timestamp_seconds`: thời điểm commit thành công gần nhất.
+
+Ví dụ PromQL khi đã cấu hình Prometheus scrape các ports trên:
+
+```promql
+rate(pipeline_published_records_total[1m])
+rate(pipeline_committed_records_total[1m])
+histogram_quantile(0.95, sum by (le, component) (rate(pipeline_inference_seconds_bucket[5m])))
+pipeline_consumer_lag
+```
+
+API `/api/v1/metrics` hiện vẫn là summary MongoDB, không phải Prometheus endpoint.
+Phase này chưa thêm Prometheus/Grafana service hoặc biểu đồ lag vào dashboard.
+
+### Benchmark runner
+
+Runner không tạo/xóa topics, không khởi động model và không sửa dữ liệu production.
+Tạo 4 topics **riêng** (1 partition, replication 1) rồi chạy consumer trên topics đó:
+
+```bash
+for topic in bench.raw bench.scored bench.anomalies bench.dlq; do
+  docker compose exec -T kafka /opt/kafka/bin/kafka-topics.sh \
+    --bootstrap-server localhost:9092 --create --if-not-exists \
+    --topic "$topic" --partitions 1 --replication-factor 1
+done
+
+python3 -m consumer.main --topic bench.raw --group-id bench-inference \
+  --scored-topic bench.scored --anomalies-topic bench.anomalies \
+  --dlq-topic bench.dlq --metrics-port 9101
+```
+
+Ở terminal khác:
+
+```bash
+python3 -m benchmark.main --raw-topic bench.raw --scored-topic bench.scored \
+  --rates 100 500 1000 --max-events 1000
+# Hoặc: make benchmark RAW_TOPIC=bench.raw SCORED_TOPIC=bench.scored
+```
+
+Không truyền `--csv` thì dùng synthetic wiring data; truyền `--csv data/PS_*.csv`
+để chạy dữ liệu PaySim thật. Mỗi scenario có dataset version riêng để không bị
+dedupe giữa các lần chạy. Kết quả và ground truth offline nằm trong
+`benchmark-results/<run-id>/` (gitignored).
+
+JSON báo cáo target/achieved producer rate, observed scored rate, số scored
+nhận được/bị thiếu, p50/p95/p99 delivery và raw-send → scored publication.
+Latencies benchmark dùng Kafka timestamp và local send wall clock: cần đồng bộ
+clock, không gồm MongoDB persistence, không phải ML metrics. Runner trả exit code
+khác 0 nếu thiếu scored sau `--drain-timeout` (mặc định 60 giây).
+
+Để đo sinks, chạy chúng trên topics benchmark với `--topic`, `--group-id`,
+`--mongo-db` riêng; scrape metrics hoặc xác nhận document count. Giữ broker,
+batch size, model version, hardware và CSV giống nhau giữa các kịch bản.
+Không coi target 100/500/1.000 events/s là throughput đã đạt — producer MVP
+vẫn send/ack tuần tự.
+
+## Phase 8 — Offline/online feature parity
+
+Pipeline offline và Kafka adapter dùng cùng whitelist:
+
+```text
+transactionId, sourceRowIndex, step, type, amount, nameOrig, nameDest
+```
+
+Test parity fail-closed nếu thứ tự hoặc tên cột lệch:
+
+```bash
+# sau khi pip install -e gatv2-pipeline
+make pipeline-test
+```
+
+Pipeline cũng kiểm thử quarantine hàng lỗi, giữ nguyên balance consistency
+không hợp lệ theo giả định nghiệp vụ, xuất Parquet không có balance/labels và
+ghi manifest gồm `rowsInput`, `rowsAccepted`, `rowsRejected` cùng
+`rejectionReasons`. Chạy pipeline offline:
+
+```bash
+make paysim-pipeline
+```
+
+Phase này chưa tự chốt graph builder, edge/node target, graph window,
+encoder/scaler, threshold hoặc graph-state recovery.
+
+## Phase 9 — Offline evaluation
+
+Evaluation đọc ground truth offline và scored predictions từ hai file riêng;
+labels không được đưa vào Kafka/inference. Prediction file là JSONL với mỗi
+dòng là `TransactionPredictionEvent`:
+
+```bash
+python3 -m evaluation.main \
+  --ground-truth data/ground_truth.csv \
+  --predictions artifacts/scored.jsonl \
+  --threshold 0.8 \
+  --output artifacts/evaluation.json
+```
+
+Hoặc:
+
+```bash
+make evaluate \
+  GROUND_TRUTH=data/ground_truth.csv \
+  PREDICTIONS=artifacts/scored.jsonl \
+  THRESHOLD=0.8
+```
+
+Tool yêu cầu tập ID ground truth và prediction khớp hoàn toàn, từ chối ID
+trùng, label ngoài `{0,1}`, score không hữu hạn và file rỗng. Report gồm
+confusion matrix, Precision, Recall, F1, PR-AUC dạng average precision và số
+prediction có `isAnomaly` khác với threshold explicit. Threshold phải được
+chọn bên ngoài test report; tool không tuning threshold hoặc dùng labels cho
+inference.
+
+Đây là ML evaluation offline, khác với Prometheus metrics throughput/latency
+của Phase 7 và chưa phải kết quả GATv2 thật.
 
 ## Contract tests
 

@@ -38,10 +38,9 @@ Phạm vi: pipeline dữ liệu train/evaluate; chưa triển khai GATv2 hay suy
 
 - [x] TOML config, CLI và README.
 - [x] Ghi rõ giới hạn RAM của pandas eager trên PaySim đầy đủ.
-- [ ] Thêm unit/integration tests và chạy trên CSV thật sau khi người dùng yêu cầu xác nhận test.
-- [ ] Đối chiếu feature schema offline với `ModelInputDTO` của Kafka adapter khi adapter tồn tại.
+- [x] Thêm unit/integration tests trên dataset nhỏ có quarantine, Parquet export và manifest.
+- [x] Đối chiếu feature schema offline với `ModelInputDTO` của Kafka adapter.
 
 ## Coverage review
 
-Đã rà ngược các điểm trong design v2: schema PaySim, giữ balances ở dữ liệu nguồn nhưng loại khỏi input, nhãn offline-only, thứ tự `step`, ID bền vững, chronological split và artifact metadata. Chưa triển khai graph/model vì design còn để mở edge/node target, window, prediction timing, score/threshold và state recovery.
-
+Đã rà ngược các điểm trong design v2: schema PaySim, giữ balances ở dữ liệu nguồn nhưng loại khỏi input, nhãn offline-only, thứ tự `step`, ID bền vững, chronological split, artifact metadata và online/offline feature parity. Chưa triển khai graph/model vì design còn để mở edge/node target, window, prediction timing, score/threshold và state recovery.

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from time import monotonic
 from collections import OrderedDict
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -40,6 +41,7 @@ class ConsumerRecord:
     partition: int
     offset: int
     value: bytes
+    timestamp_ms: int | None = None
 
 
 class BatchInferenceError(RuntimeError):
@@ -127,6 +129,7 @@ def process_batch(
     engine: InferenceEngine,
     publisher: EventPublisher,
     seen_transactions: SeenTransactionCache | None = None,
+    metrics=None,
 ) -> tuple[int, int]:
     """Validate, infer and publish one batch.
 
@@ -175,7 +178,12 @@ def process_batch(
     # The adapter owns ordering for the model batch. Output mapping still uses
     # transactionId rather than relying on the engine's list order.
     accepted.sort(key=lambda item: (item.raw.step, item.raw.sourceRowIndex))
-    predictions = engine.predict([item.model_input for item in accepted])
+    started = monotonic()
+    try:
+        predictions = engine.predict([item.model_input for item in accepted])
+    finally:
+        if metrics is not None:
+            metrics.inference.observe(monotonic() - started)
     predictions_by_id = _validate_predictions(accepted, predictions)
 
     for item in accepted:

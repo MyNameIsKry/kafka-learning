@@ -57,6 +57,7 @@ def process_batch(
     kind: SinkKind,
     store: SinkStore,
     dlq_publisher: DLQPublisher,
+    metrics=None,
 ) -> tuple[int, int]:
     """Persist a batch; database errors propagate so offsets stay uncommitted."""
 
@@ -91,4 +92,6 @@ def process_batch(
         else:
             store.upsert_alert(event)
         stored += 1
+        if metrics is not None:
+            metrics.stored.inc()
     return stored, dlq_count
