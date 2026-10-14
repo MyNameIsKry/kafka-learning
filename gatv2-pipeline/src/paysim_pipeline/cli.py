@@ -1,0 +1,27 @@
+import argparse
+import json
+from pathlib import Path
+
+from paysim_pipeline.config import load_config
+from paysim_pipeline.stages import chronological_split, export, load, validate_clean
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Prepare leakage-aware PaySim train/validation/test artifacts")
+    parser.add_argument("--config", type=Path, default=Path("configs/pipeline.toml"))
+    args = parser.parse_args()
+    config = load_config(args.config.resolve())
+    print(f"[load] {config.input_csv}")
+    source = load.run(config.input_csv)
+    print(f"[validate_clean] {len(source):,} rows")
+    accepted, rejected = validate_clean.run(source)
+    print(f"[chronological_split] accepted={len(accepted):,}, rejected={len(rejected):,}")
+    splits, boundaries = chronological_split.run(accepted, config.train_fraction, config.validation_fraction)
+    print("[export]")
+    manifest = export.run(splits, rejected, config.output_dir, config.dataset_version, config.input_csv, boundaries)
+    print(json.dumps(manifest, indent=2))
+
+
+if __name__ == "__main__":
+    main()
+

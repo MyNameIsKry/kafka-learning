@@ -1,0 +1,17 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "paysim-training-pipeline"
+version = "0.1.0"
+description = "Leakage-aware PaySim data preparation pipeline for graph-model training"
+requires-python = ">=3.11"
+dependencies = ["pandas>=2.2,<3", "pyarrow>=16,<24"]
+
+[project.scripts]
+paysim-pipeline = "paysim_pipeline.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+

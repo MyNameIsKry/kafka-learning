@@ -1,4 +1,4 @@
-.PHONY: kafka-up kafka-down topics api producer consumer raw-sink prediction-sink alert-consumer web vet build contracts-test
+.PHONY: kafka-up kafka-down topics api producer consumer raw-sink prediction-sink alert-consumer web vet build contracts-test paysim-pipeline
 
 GROUND_TRUTH ?= data/ground_truth.csv
 
@@ -43,3 +43,6 @@ build:
 
 contracts-test:
 	python3 -m unittest discover -s tests -p 'test_*.py'
+
+paysim-pipeline:
+	cd gatv2-pipeline && python -m paysim_pipeline.cli --config configs/pipeline.toml
