@@ -27,8 +27,8 @@ func main() {
 		anomalyTopic = flag.String("anomalies-topic", "transactions.anomalies", "anomaly output topic")
 		dlqTopic     = flag.String("dlq-topic", "transactions.dlq", "DLQ topic")
 		maxRetries   = flag.Int("max-retries", 3, "processing retries per input")
-		score        = flag.Float64("mock-score", 0.1, "mock anomaly score")
-		threshold    = flag.Float64("mock-threshold", 0.8, "mock anomaly threshold")
+		modelPath    = flag.String("model-path", "gatv2-pipeline/artifacts/mock/anomaly_score.onnx", "ONNX model path")
+		threshold    = flag.Float64("threshold", 0.8, "anomaly score threshold")
 		modelVersion = flag.String("model-version", "mock-v1", "model version")
 		metricsPort  = flag.Int("metrics-port", 0, "Prometheus port; zero disables metrics")
 		dedupeSize   = flag.Int("dedupe-cache-size", 100000, "bounded in-memory transaction dedupe size")
@@ -40,6 +40,11 @@ func main() {
 	if *dedupeSize <= 0 {
 		log.Fatal("dedupe-cache-size must be positive")
 	}
+	engine, err := inference.NewONNXEngine(*modelPath, *threshold, *modelVersion)
+	if err != nil {
+		log.Fatalf("initialize ONNX inference: %v", err)
+	}
+	defer engine.Close()
 	addresses := kafkaio.Brokers(*brokers)
 	reader := kafka.NewReader(kafka.ReaderConfig{
 		Brokers: addresses, Topic: *rawTopic, GroupID: *groupID,
@@ -69,7 +74,6 @@ func main() {
 	anomalyWriter.EventType = "TransactionAnomalyDetected"
 	dlqWriter.EventType = "InvalidEventRecorded"
 
-	engine := inference.MockEngine{Score: *score, Threshold: *threshold, ModelVersion: *modelVersion}
 	metrics, err := pipelinemetrics.New("inference", *metricsPort)
 	if err != nil {
 		log.Fatal(err)

@@ -5,3 +5,4 @@ __pycache__/
 data/*.csv
 !data/.gitkeep
 benchmark-results/
+gatv2-pipeline/artifacts/

@@ -46,6 +46,22 @@ make prepare PAYSIM_CSV=/data/paysim/PS_20174392719_1491204439457_log.csv
 
 `make train` mặc định tìm `paysim_pipeline.train` với config `gatv2-pipeline/configs/train.toml`; đổi bằng `TRAIN_MODULE` và `TRAIN_CONFIG` khi bổ sung trainer. Target chạy `prepare` trước để train luôn nhận artifact mới nhất. Dataset công khai được tải trực tiếp từ Kaggle; không cần token/API key.
 
+## Kafka ONNX inference mock
+
+Repo chưa có checkpoint GATv2 đã train. Để Kafka member tích hợp trước, mock ONNX graph được xuất trực tiếp (không giả lập quá trình train) và Go inference consumer gọi ONNX Runtime:
+
+```sh
+make mock-onnx-export
+make onnx-test
+make consumer
+```
+
+Artifact mặc định là `gatv2-pipeline/artifacts/mock/anomaly_score.onnx`. Go chuyển mỗi DTO thành tensor float32 `[log1p(amount), step/744, one-hot(type)]`, gọi ONNX input `features` và đọc score từ output `scores`; score được ngưỡng hóa thành prediction event JSON trên Kafka. `MODEL_PATH`, `ANOMALY_THRESHOLD` và `MODEL_VERSION` có thể override.
+
+Hướng dẫn Kafka member về cách chạy producer/consumer/sinks, input/output event contract và thay mock bằng model thật: [`KAFKA_ONNX_INTEGRATION.md`](../KAFKA_ONNX_INTEGRATION.md).
+
+Đây chỉ là model feed-forward giả lập để kiểm thử gọi model và mapping event. Feature layout/graph inputs của GATv2 thật chưa được chốt; khi có model thật, nhóm AI cần export đúng input/output contract và Go adapter cần map cùng feature schema đó. Không dùng mock để báo cáo metric ML.
+
 Có thể dùng config TOML khác. Đường dẫn tương đối được tính từ thư mục `gatv2-pipeline`; output mặc định ở `artifacts/paysim/`.
 
 `make eda` dừng sau báo cáo khám phá. Hãy xem report trước khi quyết định thêm xử lý outlier, missing values, imbalance hoặc augmentation. `make prepare` hiện chỉ áp dụng validation/quarantine cơ bản rồi split/export; nó chưa áp dụng các chiến lược này.

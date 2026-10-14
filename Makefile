@@ -12,14 +12,14 @@ RELAY_GROUP ?= financial-kafka-relay
 LOCUST ?= .venv/bin/locust
 GROUP_ID ?=
 MODEL_VERSION ?= mock-v1
-MOCK_SCORE ?= 0.1
-MOCK_THRESHOLD ?= 0.8
+ANOMALY_THRESHOLD ?= 0.8
+MODEL_PATH ?= gatv2-pipeline/artifacts/mock/anomaly_score.onnx
 MAX_RETRIES ?= 3
 DATASET_VERSION ?=
 MAX_EVENTS ?= 0
 METRICS_PORT ?= 0
 
-.PHONY: help kafka-up kafka-down topics api producer consumer raw-sink prediction-sink alert-consumer web vet build contracts-test go-test python-legacy-test paysim-pipeline pipeline-test benchmark evaluate shell dataset-download dataset-check prepare test train eda
+.PHONY: help kafka-up kafka-down topics api producer consumer raw-sink prediction-sink alert-consumer web vet build contracts-test go-test python-legacy-test paysim-pipeline pipeline-test benchmark evaluate shell dataset-download dataset-check prepare test train eda mock-onnx-export onnx-test
 
 help:
 	@printf '%s\n' \
@@ -30,6 +30,10 @@ help:
 	  '  make kafka-up             Start KurrentDB, Kafka, Kafka UI and MongoDB' \
 	  '  make event-relay          Relay persisted KurrentDB events to Kafka' \
 	  '  make api|web              Run API or dashboard' \
+	  '  make producer CSV=...     Replay PaySim into Kafka (Go)' \
+	  '  make mock-onnx-export     Export mock ONNX model for Go inference' \
+	  '  make consumer             Run ONNX inference consumer (Go)' \
+	  '  make onnx-test            Test ONNX model through Go runtime' \
 	  '  make producer CSV=...     Append PaySim into KurrentDB (Go)' \
 	  '  make consumer             Run mock inference consumer (Go)' \
 	  '  make raw-sink|prediction-sink|alert-consumer' \
@@ -46,10 +50,10 @@ help:
 	  '  make test                Run PaySim pipeline unit tests' \
 	  '  make train               Prepare data, then run the configured trainer' \
 	  '' \
-	  'Overrides: PAYSIM_DATA_DIR, PAYSIM_CSV, PIPELINE_CONFIG,' \
-	  '           PIPELINE_OUTPUT_DIR, TRAIN_MODULE, TRAIN_CONFIG'
-	  '  make pipeline-test        Run parity tests' \
-	  '  make train                Prepare data, then run configured trainer'
+	  'Overrides: MODEL_PATH, ANOMALY_THRESHOLD, MODEL_VERSION,' \
+	  '           PAYSIM_DATA_DIR, PAYSIM_CSV, PIPELINE_CONFIG,' \
+	  '           PIPELINE_OUTPUT_DIR, TRAIN_MODULE, TRAIN_CONFIG' \
+	  '  make pipeline-test        Run PaySim pipeline parity tests'
 
 kafka-up:
 	docker compose run --rm --no-deps kafka-volume-init
@@ -86,6 +90,15 @@ kurrentdb-up:
 	docker compose up -d kurrentdb
 
 consumer:
+	test -f "$(MODEL_PATH)" || (echo "Không tìm thấy ONNX model $(MODEL_PATH); chạy 'make mock-onnx-export' trước." >&2; exit 1)
+	$(NIX) develop .#paysim --command bash -c 'cd server && go run ./cmd/inference --bootstrap-servers "$(BOOTSTRAP_SERVERS)" --group-id "$(if $(GROUP_ID),$(GROUP_ID),gatv2-inference-group)" --model-path "$(abspath $(MODEL_PATH))" --threshold "$(ANOMALY_THRESHOLD)" --model-version "$(MODEL_VERSION)" --max-retries "$(MAX_RETRIES)" --metrics-port "$(METRICS_PORT)"'
+
+mock-onnx-export:
+	$(NIX) develop .#paysim --command python gatv2-pipeline/scripts/export_mock_onnx.py --output "$(abspath $(MODEL_PATH))"
+
+onnx-test: mock-onnx-export
+	$(NIX) develop .#paysim --command env PYTHONPATH=gatv2-pipeline/scripts:$$PYTHONPATH python -m unittest discover -s gatv2-pipeline/tests -p 'test_export_mock_onnx.py' -v
+	$(NIX) develop .#paysim --command bash -c 'cd server && ONNX_MODEL_PATH="$(abspath $(MODEL_PATH))" go test ./internal/inference -run TestONNXEngine -v'
 	cd server && go run ./cmd/inference --eventstore "$(KURRENTDB)" --bootstrap-servers "$(BOOTSTRAP_SERVERS)" --group-id "$(if $(GROUP_ID),$(GROUP_ID),gatv2-inference-group)" --mock-score "$(MOCK_SCORE)" --mock-threshold "$(MOCK_THRESHOLD)" --model-version "$(MODEL_VERSION)" --max-retries "$(MAX_RETRIES)" --metrics-port "$(METRICS_PORT)"
 
 raw-sink:
@@ -117,7 +130,7 @@ python-legacy-test:
 	python3 -m unittest discover -s tests -p 'test_*.py'
 
 pipeline-test:
-	PYTHONPATH=gatv2-pipeline/src:$$PYTHONPATH python3 -m unittest discover -s gatv2-pipeline/tests -p 'test_*.py'
+	$(NIX) develop .#paysim --command env PYTHONPATH=gatv2-pipeline/src:gatv2-pipeline/scripts:$$PYTHONPATH python -m unittest discover -s gatv2-pipeline/tests -p 'test_*.py'
 
 benchmark:
 	test -n "$(RAW_TOPIC)" -a -n "$(SCORED_TOPIC)" || (echo "Usage: make benchmark RAW_TOPIC=bench.raw SCORED_TOPIC=bench.scored" && exit 1)
