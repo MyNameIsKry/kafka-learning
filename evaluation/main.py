@@ -12,7 +12,12 @@ from .metrics import evaluate
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Evaluate scored predictions against offline PaySim labels")
-    parser.add_argument("--ground-truth", type=Path, required=True, help="offline CSV with transactionId,isFraud")
+    parser.add_argument(
+        "--ground-truth",
+        type=Path,
+        required=True,
+        help="offline CSV with transactionId,step,isFraud",
+    )
     parser.add_argument("--predictions", type=Path, required=True, help="scored JSONL, not a Kafka topic dump with non-JSON metadata")
     parser.add_argument("--threshold", type=float, required=True, help="fixed threshold chosen outside this test report")
     parser.add_argument("--output", type=Path, help="optional JSON report path")

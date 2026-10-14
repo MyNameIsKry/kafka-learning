@@ -337,8 +337,10 @@ make evaluate \
   THRESHOLD=0.8
 ```
 
-Tool yêu cầu tập ID ground truth và prediction khớp hoàn toàn, từ chối ID
-trùng, label ngoài `{0,1}`, score không hữu hạn và file rỗng. Report gồm
+Ground truth CSV phải có `transactionId,step,isFraud` (có thể thêm
+`isFlaggedFraud`). Tool yêu cầu tập ID và `step` của ground truth/prediction
+khớp hoàn toàn, từ chối ID trùng, step không hợp lệ, label ngoài `{0,1}`,
+score không hữu hạn và file rỗng. Report gồm
 confusion matrix, Precision, Recall, F1, PR-AUC dạng average precision và số
 prediction có `isAnomaly` khác với threshold explicit. Threshold phải được
 chọn bên ngoài test report; tool không tuning threshold hoặc dùng labels cho

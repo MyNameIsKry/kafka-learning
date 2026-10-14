@@ -32,21 +32,35 @@ class EvaluationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             labels = root / "labels.csv"
-            labels.write_text("transactionId,isFraud\na,1\nb,0\n", encoding="utf-8")
+            labels.write_text("transactionId,step,isFraud\na,1,1\nb,1,0\n", encoding="utf-8")
             predictions = root / "predictions.jsonl"
             predictions.write_text("\n".join(json.dumps({
                 "schemaVersion": 1, "transactionId": item, "step": 1,
                 "anomalyScore": score, "isAnomaly": flag, "modelVersion": "test-v1",
                 "processedAt": "2026-10-14T00:00:00Z", "reasonCodes": [],
             }) for item, score, flag in (("a", .9, True), ("b", .1, False))) + "\n", encoding="utf-8")
-            self.assertEqual(load_ground_truth(labels), {"a": 1, "b": 0})
+            self.assertEqual(load_ground_truth(labels), {"a": (1, 1), "b": (1, 0)})
             self.assertEqual(set(load_predictions(predictions)), {"a", "b"})
+
+    def test_join_rejects_step_mismatch(self) -> None:
+        with self.assertRaisesRegex(ValueError, "steps do not match"):
+            join_inputs({"a": (2, 1)}, {"a": (1, .9, True)})
 
     def test_evaluation_rejects_empty_and_non_finite_scores(self) -> None:
         with self.assertRaises(ValueError):
             evaluate([], .5)
         with self.assertRaises(ValueError):
             evaluate([ScoredLabel("a", float("nan"), 1)], .5)
+
+    def test_ground_truth_rejects_non_integer_json_values(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "labels.jsonl"
+            path.write_text(
+                json.dumps({"transactionId": "a", "step": 1.5, "isFraud": 1}) + "\n",
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(ValueError, "integer"):
+                load_ground_truth(path)
 
 
 if __name__ == "__main__":

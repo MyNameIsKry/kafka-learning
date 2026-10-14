@@ -96,10 +96,13 @@ def run_scenario(args, directory: Path, run_id: str, rate: int) -> dict:
                         if prediction.modelVersion != args.model_version:
                             raise ValueError("benchmark prediction modelVersion mismatch")
                         seen.add(transaction_id)
-                        latency_ms = message.timestamp - tracking.sent_at_ms[transaction_id]
-                        if message.timestamp < 0 or latency_ms < 0:
+                        if message.timestamp is None or message.timestamp < 0:
                             invalid_timestamps += 1
                         else:
+                            latency_ms = message.timestamp - tracking.sent_at_ms[transaction_id]
+                            if latency_ms < 0:
+                                invalid_timestamps += 1
+                                continue
                             latencies.append(latency_ms / 1000)
             return dict(target_events_per_second=rate, published=stats.published,
                 producer_seconds=producer_seconds,

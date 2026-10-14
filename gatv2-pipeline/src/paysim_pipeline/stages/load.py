@@ -10,6 +10,8 @@ def run(input_csv: Path) -> pd.DataFrame:
         raise FileNotFoundError(f"PaySim CSV not found: {input_csv}")
     frame = pd.read_csv(input_csv, dtype={"type": "string", "nameOrig": "string", "nameDest": "string"})
     frame.columns = [column.strip() for column in frame.columns]
+    if len(frame.columns) != len(set(frame.columns)):
+        raise ValueError("Unexpected PaySim schema; duplicate column names")
     missing = sorted(set(PAYSIM_COLUMNS) - set(frame.columns))
     extra = sorted(set(frame.columns) - set(PAYSIM_COLUMNS))
     if missing or extra:
@@ -18,4 +20,3 @@ def run(input_csv: Path) -> pd.DataFrame:
     # Stable identity refers to the original data row, before any filtering/sorting.
     frame.insert(0, "sourceRowIndex", range(len(frame)))
     return frame
-

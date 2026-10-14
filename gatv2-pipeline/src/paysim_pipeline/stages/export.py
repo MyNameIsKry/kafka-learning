@@ -44,6 +44,15 @@ def run(
         total_accepted += len(ordered)
     if not rejected.empty:
         rejected.to_parquet(output_dir / "rejected.parquet", index=False)
+    else:
+        (output_dir / "rejected.parquet").unlink(missing_ok=True)
+    artifact_names = [
+        "features/{train,validation,test}.parquet",
+        "ground_truth/{train,validation,test}.parquet",
+        "feature_schema.json",
+    ]
+    if not rejected.empty:
+        artifact_names.append("rejected.parquet")
     schema = {
         "schemaVersion": 1,
         "datasetVersion": dataset_version,
@@ -71,7 +80,7 @@ def run(
         "rowsRejected": int(len(rejected)),
         "rejectionReasons": rejection_reasons,
         "splitBoundaries": boundaries, "splits": counts,
-        "artifacts": ["features/{train,validation,test}.parquet", "ground_truth/{train,validation,test}.parquet", "feature_schema.json"],
+        "artifacts": artifact_names,
     }
     (output_dir / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
     return manifest

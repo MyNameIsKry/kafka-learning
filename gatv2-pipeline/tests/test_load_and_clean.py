@@ -30,6 +30,17 @@ class LoadAndCleanTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "Unexpected PaySim schema"):
                 load.run(csv_path)
 
+    def test_load_rejects_duplicate_columns_after_trimming(self):
+        with tempfile.TemporaryDirectory() as directory:
+            csv_path = Path(directory) / "duplicate.csv"
+            csv_path.write_text(
+                "step, step,type,amount,nameOrig,nameDest,oldbalanceOrg,newbalanceOrig,"
+                "oldbalanceDest,newbalanceDest,isFraud,isFlaggedFraud\n",
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(ValueError, "duplicate column"):
+                load.run(csv_path)
+
     def test_clean_quarantines_invalid_rows_and_keeps_balances(self):
         frame = pd.DataFrame([
             {"sourceRowIndex": 0, **paysim_record(oldbalanceOrg=999.0)},
