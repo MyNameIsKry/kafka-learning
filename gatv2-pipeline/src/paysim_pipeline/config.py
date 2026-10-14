@@ -27,8 +27,8 @@ def load_config(path: Path) -> PipelineConfig:
     if any(value <= 0 or value >= 1 for value in fractions) or abs(sum(fractions) - 1.0) > 1e-9:
         raise ValueError("train/validation/test fractions must be positive and sum to 1")
     stages = tuple(pipeline["stages"])
-    if stages != ("load", "validate_clean", "chronological_split", "export"):
-        raise ValueError("pipeline stages must be load -> validate_clean -> chronological_split -> export")
+    if stages != ("load", "eda", "validate_clean", "chronological_split", "export"):
+        raise ValueError("pipeline stages must be load -> eda -> validate_clean -> chronological_split -> export")
     return PipelineConfig(
         input_csv=(base / dataset["input_csv"]).resolve(),
         output_dir=(base / dataset["output_dir"]).resolve(),

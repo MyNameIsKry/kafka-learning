@@ -4,10 +4,11 @@ Pipeline chuẩn bị dữ liệu offline theo `financial_anomaly_kafka_paysim_d
 
 ## Data flow
 
-`CSV → schema/load → validate + quarantine → chronological split → safe feature/label export`
+`CSV → schema/load → pre-clean EDA report → validate + quarantine → chronological split → safe feature/label export`
 
 - Giữ nguyên bản ghi hợp lệ; không deduplicate giao dịch, không clip/outlier removal hay sửa balance theo suy đoán.
 - Hàng thiếu/sai schema hoặc sai miền cơ bản được đưa vào `rejected.parquet` kèm lý do.
+- `eda/raw_dataset_report.json` được tạo trước cleaning, gồm missing/blank, numeric summaries, type/label counts, exact duplicates, thứ tự `step` và balance consistency. EDA không mutate/drop dữ liệu; nhãn trên toàn tập chỉ là mô tả khám phá, không dùng để fit/tune/chọn threshold.
 - Chia theo các giá trị `step` nguyên vẹn; cùng một step không bị xé qua hai tập. Mặc định 70/15/15 theo thứ tự thời gian.
 - `features/*.parquet` chỉ theo whitelist `transactionId, sourceRowIndex, step, type, amount, nameOrig, nameDest`; IDs và step là metadata/graph structure, chưa biến thành vector số.
 - `ground_truth/*.parquet` tách nhãn `isFraud` và `isFlaggedFraud`; balance không xuất hiện trong features. Chỉ dùng nhãn train/validation cho fit/tuning, test chỉ đánh giá cuối.
@@ -28,6 +29,8 @@ Từ thư mục gốc repo, Makefile hỗ trợ các bước thường dùng. Ni
 ```sh
 make dataset-download       # tạo data/ và fetch public dataset từ Kaggle
 make dataset-check
+make eda                    # chỉ chạy EDA, chưa cleaning
+# Xem gatv2-pipeline/artifacts/paysim/eda/raw_dataset_report.json
 make prepare                # chạy pipeline trong Nix dev shell
 make train                  # hiện báo thiếu module train; model chưa được triển khai
 ```
@@ -42,6 +45,8 @@ make prepare PAYSIM_CSV=/data/paysim/PS_20174392719_1491204439457_log.csv
 `make train` mặc định tìm `paysim_pipeline.train` với config `gatv2-pipeline/configs/train.toml`; đổi bằng `TRAIN_MODULE` và `TRAIN_CONFIG` khi bổ sung trainer. Target chạy `prepare` trước để train luôn nhận artifact mới nhất. Dataset công khai được tải trực tiếp từ Kaggle; không cần token/API key.
 
 Có thể dùng config TOML khác. Đường dẫn tương đối được tính từ thư mục `gatv2-pipeline`; output mặc định ở `artifacts/paysim/`.
+
+`make eda` dừng sau báo cáo khám phá. Hãy xem report trước khi quyết định thêm xử lý outlier, missing values, imbalance hoặc augmentation. `make prepare` hiện chỉ áp dụng validation/quarantine cơ bản rồi split/export; nó chưa áp dụng các chiến lược này.
 
 ## Explicitly deferred
 

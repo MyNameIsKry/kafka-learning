@@ -7,7 +7,7 @@ TRAIN_MODULE ?= paysim_pipeline.train
 TRAIN_CONFIG ?= gatv2-pipeline/configs/train.toml
 
 .PHONY: help kafka-up kafka-down gateway inventory email shipping inventory-2 web vet build \
-	shell dataset-download dataset-check prepare paysim-pipeline train test
+	shell dataset-download dataset-check eda prepare paysim-pipeline train test
 
 help:
 	@printf '%s\n' \
@@ -24,6 +24,7 @@ help:
 	  '  make shell               Enter the Nix PaySim development shell' \
 	  '  make dataset-download    Fetch and extract PaySim from Kaggle' \
 	  '  make dataset-check       Check that the CSV exists' \
+	  '  make eda                 Generate pre-clean EDA report only' \
 	  '  make prepare             Clean, split, and export train artifacts' \
 	  '  make test                Run PaySim pipeline unit tests' \
 	  '  make train               Prepare data, then run the configured trainer' \
@@ -70,6 +71,13 @@ dataset-download:
 
 dataset-check:
 	test -f $(PAYSIM_CSV) || (echo "Không tìm thấy $(PAYSIM_CSV); chạy 'make dataset-download' hoặc đặt PAYSIM_CSV đúng đường dẫn." >&2; exit 1)
+
+eda: dataset-check
+	$(NIX) develop .#paysim --command env PYTHONPATH=gatv2-pipeline/src python -m paysim_pipeline.cli \
+		--config $(PIPELINE_CONFIG) \
+		--input-csv $(abspath $(PAYSIM_CSV)) \
+		--output-dir $(abspath $(PIPELINE_OUTPUT_DIR)) \
+		--eda-only
 
 prepare: dataset-check
 	$(NIX) develop .#paysim --command env PYTHONPATH=gatv2-pipeline/src python -m paysim_pipeline.cli \

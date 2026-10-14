@@ -12,6 +12,7 @@ Phạm vi: pipeline dữ liệu train/evaluate; chưa triển khai GATv2 hay suy
 
 ## Pass 2 — Làm sạch có thể kiểm toán
 
+- [x] Chạy EDA trên dữ liệu thô trước cleaning; lưu report và không mutate input.
 - [x] Validate kiểu, giá trị hữu hạn, miền `step`, `amount`, `type`, nhãn nhị phân và node IDs.
 - [x] Đưa hàng sai vào quarantine kèm `rejectReason`, không âm thầm drop.
 - [x] Không loại giao dịch trùng, không clip/outlier removal, không tự sửa balance.

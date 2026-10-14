@@ -58,7 +58,7 @@ def run(
         "sourceSha256": sha256_file(input_csv),
         "createdAt": datetime.now(timezone.utc).isoformat(), "rowsRejected": int(len(rejected)),
         "splitBoundaries": boundaries, "splits": counts,
-        "artifacts": ["features/{train,validation,test}.parquet", "ground_truth/{train,validation,test}.parquet", "feature_schema.json"],
+        "artifacts": ["eda/raw_dataset_report.json", "features/{train,validation,test}.parquet", "ground_truth/{train,validation,test}.parquet", "feature_schema.json"],
     }
     (output_dir / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
     return manifest

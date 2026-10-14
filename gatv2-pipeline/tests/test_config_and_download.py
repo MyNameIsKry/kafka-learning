@@ -25,7 +25,7 @@ class ConfigAndDownloadTests(unittest.TestCase):
             config_text = (
                 '[dataset]\ninput_csv = "data/input.csv"\noutput_dir = "artifacts"\ndataset_version = "v1"\n'
                 '[split]\ntrain_fraction = 0.7\nvalidation_fraction = 0.15\ntest_fraction = 0.15\n'
-                '[pipeline]\nstages = ["load", "validate_clean", "chronological_split", "export"]\n'
+                '[pipeline]\nstages = ["load", "eda", "validate_clean", "chronological_split", "export"]\n'
             )
             config_path.write_text(config_text, encoding="utf-8")
 
