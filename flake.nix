@@ -22,15 +22,24 @@
           python = pythonBase.withPackages (packages: with packages; [
             pandas
             pyarrow
+            onnx
           ]);
         in
         {
           default = pkgs.mkShell {
-            packages = [ python ];
+            packages = [ python pkgs.go pkgs.onnxruntime pkgs.pkg-config ];
+            shellHook = ''
+              export ONNXRUNTIME_SHARED_LIBRARY_PATH="${pkgs.onnxruntime}/lib/${if pkgs.stdenv.isDarwin then "libonnxruntime.dylib" else "libonnxruntime.so"}"
+              export CGO_ENABLED=1
+            '';
           };
 
           paysim = pkgs.mkShell {
-            packages = [ python ];
+            packages = [ python pkgs.go pkgs.onnxruntime pkgs.pkg-config ];
+            shellHook = ''
+              export ONNXRUNTIME_SHARED_LIBRARY_PATH="${pkgs.onnxruntime}/lib/${if pkgs.stdenv.isDarwin then "libonnxruntime.dylib" else "libonnxruntime.so"}"
+              export CGO_ENABLED=1
+            '';
           };
         });
     };

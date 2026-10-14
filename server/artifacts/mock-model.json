@@ -1,0 +1,7 @@
+{
+  "schemaVersion": 1,
+  "modelType": "constant-score-mock",
+  "modelVersion": "mock-v1",
+  "score": 0.1,
+  "threshold": 0.8
+}

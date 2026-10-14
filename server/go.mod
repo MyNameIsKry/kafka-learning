@@ -2,7 +2,10 @@ module server
 
 go 1.26.0
 
-require go.mongodb.org/mongo-driver/v2 v2.4.1
+require (
+	github.com/yalue/onnxruntime_go v1.31.0
+	go.mongodb.org/mongo-driver/v2 v2.4.1
+)
 
 require (
 	github.com/prometheus/client_golang v1.23.2
