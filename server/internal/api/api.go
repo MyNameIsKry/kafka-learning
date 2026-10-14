@@ -56,8 +56,8 @@ type Alert struct {
 type Reader interface {
 	Ping(context.Context) error
 	Summary(context.Context) (Summary, error)
-	Transactions(context.Context, int, bool) ([]Transaction, error)
-	Alerts(context.Context, int) ([]Alert, error)
+	Transactions(context.Context, int, int, string) ([]Transaction, error)
+	Alerts(context.Context, int, int) ([]Alert, error)
 }
 
 func NewHandler(reader Reader, corsOrigin string, ingestion ...TransactionAppender) http.Handler {
@@ -116,15 +116,32 @@ func transactionsHandler(reader Reader) http.HandlerFunc {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 			return
 		}
+		status, err := parseStatus(r)
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			return
+		}
+		if anomaliesOnly {
+			status = "anomaly"
+		}
+		offset, err := parseOffset(r)
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			return
+		}
 
 		ctx, cancel := requestContext(r)
 		defer cancel()
-		result, err := reader.Transactions(ctx, limit, anomaliesOnly)
+		result, err := reader.Transactions(ctx, limit+1, offset, status)
 		if err != nil {
 			writeServerError(w)
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"items": result, "limit": limit})
+		hasMore := len(result) > limit
+		if hasMore {
+			result = result[:limit]
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"items": result, "limit": limit, "offset": offset, "hasMore": hasMore})
 	}
 }
 
@@ -135,14 +152,23 @@ func alertsHandler(reader Reader) http.HandlerFunc {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 			return
 		}
+		offset, err := parseOffset(r)
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			return
+		}
 		ctx, cancel := requestContext(r)
 		defer cancel()
-		result, err := reader.Alerts(ctx, limit)
+		result, err := reader.Alerts(ctx, limit+1, offset)
 		if err != nil {
 			writeServerError(w)
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"items": result, "limit": limit})
+		hasMore := len(result) > limit
+		if hasMore {
+			result = result[:limit]
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"items": result, "limit": limit, "offset": offset, "hasMore": hasMore})
 	}
 }
 
@@ -168,6 +194,31 @@ func parseBoolQuery(r *http.Request, key string) (bool, error) {
 		return false, errors.New(key + " must be true or false")
 	}
 	return parsed, nil
+}
+
+func parseOffset(r *http.Request) (int, error) {
+	value := r.URL.Query().Get("offset")
+	if value == "" {
+		return 0, nil
+	}
+	offset, err := strconv.Atoi(value)
+	if err != nil || offset < 0 || offset > 1_000_000 {
+		return 0, errors.New("offset must be an integer between 0 and 1000000")
+	}
+	return offset, nil
+}
+
+func parseStatus(r *http.Request) (string, error) {
+	value := r.URL.Query().Get("status")
+	if value == "" {
+		return "", nil
+	}
+	switch value {
+	case "pending", "normal", "anomaly":
+		return value, nil
+	default:
+		return "", errors.New("status must be pending, normal or anomaly")
+	}
 }
 
 func requestContext(r *http.Request) (context.Context, context.CancelFunc) {

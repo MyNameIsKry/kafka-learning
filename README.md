@@ -68,6 +68,17 @@ body. Giới hạn body 64 KiB. HTTP nhận giao dịch online theo thứ tự a
 sort toàn bộ request theo `step`; preprocessing/graph ordering của model thật
 vẫn cần chốt. `GET /readyz` hiện kiểm tra MongoDB, không báo worker lag/parked.
 
+Dashboard dùng phân trang thật từ API, không chỉ cắt danh sách ở frontend:
+
+```text
+GET /api/v1/transactions?limit=12&offset=12&status=anomaly
+GET /api/v1/alerts?limit=8&offset=8
+```
+
+Response có `offset` và `hasMore`; UI hiển thị nút Previous/Next. Tổng anomaly
+trên summary vẫn là tổng toàn bộ (ví dụ 39), còn danh sách alert hiển thị theo
+từng trang.
+
 Kiểm thử server một process, độc lập Kafka và recovery:
 
 ```bash

@@ -141,8 +141,8 @@ func (s *Store) Summary(ctx context.Context) (api.Summary, error) {
 	return result, nil
 }
 
-func (s *Store) Transactions(ctx context.Context, limit int, anomaliesOnly bool) ([]api.Transaction, error) {
-	pipeline := transactionPipeline(limit, anomaliesOnly)
+func (s *Store) Transactions(ctx context.Context, limit, offset int, status string) ([]api.Transaction, error) {
+	pipeline := transactionPipeline(limit, offset, status)
 	cursor, err := s.transactions.Aggregate(ctx, pipeline)
 	if err != nil {
 		return nil, err
@@ -159,9 +159,38 @@ func (s *Store) Transactions(ctx context.Context, limit int, anomaliesOnly bool)
 	return items, nil
 }
 
-func transactionPipeline(limit int, anomaliesOnly bool) mongo.Pipeline {
+func transactionPipeline(limit, offset int, status string) mongo.Pipeline {
 	sort := bson.D{{Key: "step", Value: -1}, {Key: "sourceRowIndex", Value: -1}, {Key: "transactionId", Value: -1}}
+	if status != "" {
+		pipeline := mongo.Pipeline{
+			bson.D{{Key: "$lookup", Value: bson.D{
+				{Key: "from", Value: "transaction_predictions"},
+				{Key: "let", Value: bson.D{{Key: "transactionId", Value: "$transactionId"}}},
+				{Key: "pipeline", Value: mongo.Pipeline{
+					bson.D{{Key: "$match", Value: bson.D{{Key: "$expr", Value: bson.D{{Key: "$eq", Value: bson.A{"$transactionId", "$$transactionId"}}}}}}},
+					bson.D{{Key: "$sort", Value: bson.D{{Key: "processedAt", Value: -1}, {Key: "modelVersion", Value: -1}}}},
+					bson.D{{Key: "$limit", Value: 1}},
+				}},
+				{Key: "as", Value: "prediction"},
+			}}},
+			bson.D{{Key: "$unwind", Value: bson.D{{Key: "path", Value: "$prediction"}, {Key: "preserveNullAndEmptyArrays", Value: true}}}},
+		}
+		match := bson.D{}
+		switch status {
+		case "anomaly":
+			match = bson.D{{Key: "prediction.isAnomaly", Value: true}}
+		case "normal":
+			match = bson.D{{Key: "prediction.isAnomaly", Value: false}}
+		case "pending":
+			match = bson.D{{Key: "prediction", Value: bson.D{{Key: "$exists", Value: false}}}}
+		}
+		pipeline = append(pipeline, bson.D{{Key: "$match", Value: match}}, bson.D{{Key: "$sort", Value: sort}}, bson.D{{Key: "$skip", Value: offset}}, bson.D{{Key: "$limit", Value: limit}})
+		return pipeline
+	}
 	pipeline := mongo.Pipeline{
+		bson.D{{Key: "$sort", Value: sort}},
+		bson.D{{Key: "$skip", Value: offset}},
+		bson.D{{Key: "$limit", Value: limit}},
 		bson.D{{Key: "$lookup", Value: bson.D{
 			{Key: "from", Value: "transaction_predictions"},
 			{Key: "let", Value: bson.D{{Key: "transactionId", Value: "$transactionId"}}},
@@ -177,22 +206,11 @@ func transactionPipeline(limit int, anomaliesOnly bool) mongo.Pipeline {
 			{Key: "preserveNullAndEmptyArrays", Value: true},
 		}}},
 	}
-	if anomaliesOnly {
-		pipeline = append(pipeline, bson.D{{Key: "$match", Value: bson.D{{Key: "prediction.isAnomaly", Value: true}}}})
-		// Keep the raw index order and stop after enough matching rows. Limiting
-		// raw rows before the anomaly filter would omit older matching records.
-		pipeline = append(pipeline, bson.D{{Key: "$limit", Value: limit}})
-		return append(mongo.Pipeline{bson.D{{Key: "$sort", Value: sort}}}, pipeline...)
-	}
-	// Bound the raw rows before joining predictions on the common list path.
-	return append(mongo.Pipeline{
-		bson.D{{Key: "$sort", Value: sort}},
-		bson.D{{Key: "$limit", Value: limit}},
-	}, pipeline...)
+	return pipeline
 }
 
-func (s *Store) Alerts(ctx context.Context, limit int) ([]api.Alert, error) {
-	options := options.Find().SetSort(bson.D{{Key: "processedAt", Value: -1}}).SetLimit(int64(limit))
+func (s *Store) Alerts(ctx context.Context, limit, offset int) ([]api.Alert, error) {
+	options := options.Find().SetSort(bson.D{{Key: "processedAt", Value: -1}}).SetSkip(int64(offset)).SetLimit(int64(limit))
 	cursor, err := s.alerts.Find(ctx, bson.D{{Key: "isAnomaly", Value: true}}, options)
 	if err != nil {
 		return nil, err

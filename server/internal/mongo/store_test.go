@@ -12,17 +12,24 @@ import (
 
 func TestTransactionPipeline(t *testing.T) {
 	for _, anomaliesOnly := range []bool{false, true} {
-		pipeline := transactionPipeline(12, anomaliesOnly)
+		status := ""
+		if anomaliesOnly {
+			status = "anomaly"
+		}
+		pipeline := transactionPipeline(12, 0, status)
 		if !anomaliesOnly {
-			if pipeline[0][0].Key != "$sort" || pipeline[1][0].Key != "$limit" || pipeline[2][0].Key != "$lookup" {
+			if pipeline[0][0].Key != "$sort" || pipeline[1][0].Key != "$skip" || pipeline[2][0].Key != "$limit" || pipeline[3][0].Key != "$lookup" {
 				t.Fatal("normal list must sort and limit before lookup")
 			}
 		} else {
-			if pipeline[0][0].Key != "$sort" || pipeline[1][0].Key != "$lookup" || pipeline[3][0].Key != "$match" || pipeline[4][0].Key != "$limit" {
-				t.Fatal("anomaly list must filter joined predictions before limiting")
+			if pipeline[0][0].Key != "$lookup" || pipeline[2][0].Key != "$match" || pipeline[3][0].Key != "$sort" || pipeline[4][0].Key != "$skip" || pipeline[5][0].Key != "$limit" {
+				t.Fatal("anomaly list must filter joined predictions before paging")
 			}
 		}
 		sortIndex := 0
+		if anomaliesOnly {
+			sortIndex = 3
+		}
 		sort := pipeline[sortIndex][0].Value.(bson.D)
 		if len(sort) != 3 || sort[1].Key != "sourceRowIndex" || sort[2].Key != "transactionId" {
 			t.Fatal("transaction ordering must include stable tie-breakers")
@@ -88,18 +95,26 @@ func TestMongoTransactionQueries(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	items, err := store.Transactions(ctx, 1, false)
+	items, err := store.Transactions(ctx, 1, 0, "")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(items) != 1 || items[0].TransactionID != "pending" || items[0].Status != "pending" {
 		t.Fatalf("latest row = %+v; want pending", items)
 	}
-	items, err = store.Transactions(ctx, 1, true)
+	items, err = store.Transactions(ctx, 1, 0, "anomaly")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(items) != 1 || items[0].TransactionID != "anomaly" || items[0].Status != "anomaly" || items[0].OldBalanceOrg != 100 {
 		t.Fatalf("filtered rows = %+v; want older anomaly with balance", items)
+	}
+	items, err = store.Transactions(ctx, 1, 0, "normal")
+	if err != nil || len(items) != 1 || items[0].TransactionID != "normal" || items[0].Status != "normal" {
+		t.Fatalf("normal filtered rows = %+v; err=%v", items, err)
+	}
+	items, err = store.Transactions(ctx, 1, 0, "pending")
+	if err != nil || len(items) != 1 || items[0].TransactionID != "pending" || items[0].Status != "pending" {
+		t.Fatalf("pending filtered rows = %+v; err=%v", items, err)
 	}
 }
