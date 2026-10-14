@@ -6,13 +6,13 @@ MongoDB, GATv2 và React Dashboard.
 ## Trạng thái triển khai
 
 - Phase 9: Offline scored-prediction evaluation
-- Kafka KRaft, Kafka UI và MongoDB chạy bằng Docker Compose.
+- KurrentDB, Kafka KRaft, Kafka UI và MongoDB chạy bằng Docker Compose.
 - Các topic PaySim được tạo với một partition cho MVP.
 - MongoDB sẵn sàng; collections được tạo tự động khi sink khởi động.
 - Go runtime contracts, PaySim replay producer, mock inference consumer, raw
   sink, prediction sink và alert consumer đã được triển khai.
-- Kafka là event store/source of truth; MongoDB chỉ là read-model projection có
-  thể rebuild bằng consumer group mới.
+- KurrentDB là event store/source of truth. Go relay chuyển event sang Kafka;
+  MongoDB chỉ là read-model projection.
 - Metrics vận hành và benchmark runner đã có; model GATv2 thật và graph-state recovery chưa tích hợp.
 
 ## Khởi động infrastructure
@@ -23,6 +23,7 @@ make kafka-up
 
 Các service:
 
+- KurrentDB/UI: `http://localhost:2113` (insecure chỉ cho local demo)
 - Kafka: `localhost:9092`
 - Kafka UI: `http://localhost:8090`
 - MongoDB: `mongodb://localhost:27017`
@@ -54,18 +55,23 @@ cd ..
 
 Python environment chỉ cần cho offline pipeline và evaluation.
 
+Go runtime yêu cầu Go theo `server/go.mod` (hiện 1.26); Go có thể tự tải toolchain.
+
 Validate CSV và tạo ground truth offline mà không kết nối Kafka:
 
 ```bash
+ROOT="$PWD"
 (cd server && go run ./cmd/producer \
-  --csv "$(pwd)/data/PS_20174392719_1491204439457_log.csv" \
-  --ground-truth-path "$(pwd)/data/ground_truth.csv" \
+  --csv "$ROOT/data/PS_20174392719_1491204439457_log.csv" \
+  --ground-truth-path "$ROOT/data/ground_truth.csv" \
   --dry-run)
 ```
 
-Replay vào Kafka local, ví dụ 100 events/giây:
+Chạy relay trong terminal riêng, rồi ghi CSV vào KurrentDB:
 
 ```bash
+make event-relay
+# terminal khác:
 make producer \
   CSV=data/PS_20174392719_1491204439457_log.csv \
   GROUND_TRUTH=data/ground_truth.csv
@@ -82,8 +88,8 @@ Producer publish raw event có đủ bốn balance nhưng không publish
 
 Producer xác thực toàn bộ CSV, external-sort theo `(step, sourceRowIndex)` với
 chunk giới hạn bộ nhớ và publish theo thứ tự đó. Khi delivery
-failure, producer dừng mặc định để không bỏ qua event giữa chuỗi. Chỉ dùng
-`--continue-on-error` khi muốn chủ động bỏ qua event lỗi.
+failure, producer dừng mặc định để không bỏ qua event giữa chuỗi.
+Producer không gửi trực tiếp vào Kafka: append KurrentDB thành công trước.
 
 ## Inference consumer với mock predictor
 
@@ -102,7 +108,7 @@ Chạy consumer sau khi infrastructure đã khởi động:
 ```
 
 Consumer chỉ commit input offset sau khi validation/DLQ, inference và các
-output publish cần thiết được Kafka acknowledge. Schema lỗi được publish vào
+output append cần thiết được KurrentDB acknowledge. Schema lỗi được ghi vào KurrentDB trước khi relay sang
 `transactions.dlq`; lỗi inference/output sẽ retry với backoff và dừng mà
 không commit sau khi hết retry. Consumer có bounded dedupe cache trong RAM
 (`--dedupe-cache-size`); graph-state/dedupe durable sau restart sẽ được xử lý
@@ -139,9 +145,47 @@ raw theo `transactionId`, prediction/alert theo
 `transactions.dlq`; lỗi MongoDB hoặc lỗi publish DLQ làm batch retry và không
 commit offset cho tới khi lưu thành công.
 
-Kafka là event store authoritative trong runtime Go. MongoDB không phải nguồn
-dữ liệu chính; các collection projection có thể rebuild bằng cách chạy sink
-với consumer group mới từ `FirstOffset`.
+KurrentDB là source of truth. Mỗi event có stream `financial-anomaly-event-<UUID>` và
+envelope gồm `schemaVersion`, `eventId`, `eventType`, `occurredAt`, `topic`, `key`,
+`payload`. Event types: `RawTransactionRecorded`, `TransactionScored`,
+`TransactionAnomalyDetected`, `InvalidEventRecorded`. ID ổn định theo topic và
+transaction/model version (DLQ theo source topic/partition/offset). Append dùng
+`NoStream`; retry kiểm tra event cũ, từ chối payload xung đột, không ghi đè.
+Timestamp retry không thay đổi event đã lưu. Payload Kafka vẫn giữ DTO cũ để
+API/dashboard/offline tooling tương thích; `eventId` nằm trong Kafka header.
+
+Relay dùng persistent subscription `$all` lọc prefix, một subscriber và buffer
+1; ACK chỉ sau Kafka acknowledge. Delivery là **at-least-once**, không phải
+exactly-once. Mất ACK có thể tạo duplicate; sinks upsert idempotent.
+
+Rebuild Kafka: dừng relay cũ, chạy `make event-relay RELAY_GROUP=rebuild-<id>`
+để replay từ đầu KurrentDB. Rebuild MongoDB: chạy sinks với consumer group mới
+và database mới qua `--mongo-db`; không cần xóa database đang dùng. Nếu Kafka
+đã mất history, replay từ KurrentDB trước. Không chạy hai relay cùng lúc khi
+cần giữ thứ tự. KurrentDB single node cần backup; volume không thay backup.
+
+Luồng demo:
+`CSV → Go producer → KurrentDB → Go relay → Kafka raw → Go inference →
+KurrentDB scored/anomaly → Go relay → Kafka → Go sinks → MongoDB → Go API → React`.
+DLQ từ inference/sinks cũng được append vào KurrentDB trước khi relay.
+
+Các runtime Python cũ và Python benchmark direct-to-Kafka là tooling legacy,
+không đại diện cho luồng KurrentDB authoritative và không dùng để nhập event
+production-like. Labels/ground truth vẫn offline, không nằm trong event store.
+
+Kiểm thử KurrentDB và end-to-end (không xóa dữ liệu hiện có):
+
+```bash
+make kafka-up
+(cd server && KURRENTDB_TEST_CONNECTION='kurrentdb://localhost:2113?tls=false' go test ./internal/eventstore -v)
+bash scripts/kurrent-smoke.sh
+```
+
+Smoke test dùng namespace/topics/databases riêng, giữ lại resources để kiểm tra.
+Persistent subscription có thể park event sau nhiều lần timeout: kiểm tra parked
+messages trong KurrentDB UI và replay parked; không coi consumer lag thấp là
+bằng chứng tất cả event đã được chuyển. Kafka/MongoDB lỗi không được xóa event
+KurrentDB. Single-node/insecure chỉ dành cho demo, không phải HA production.
 
 Các collection/index được tạo bởi `MongoStore`:
 
@@ -223,6 +267,7 @@ curl http://127.0.0.1:9101/metrics
 Metrics chính:
 
 - `pipeline_published_records_total`: Kafka publish đã acknowledge; gồm publish lặp do retry.
+- `pipeline_eventstore_appended_records_total`: producer/inference append đã được KurrentDB xác nhận, gồm idempotent retries; không phải Kafka publish.
 - `pipeline_stored_records_total`: DB upsert đã acknowledge; không phải unique documents.
 - `pipeline_committed_records_total`: input records trong batches commit thành công.
 - `pipeline_failures_total`, `pipeline_failed_record_attempts_total`, `pipeline_retries_total`:

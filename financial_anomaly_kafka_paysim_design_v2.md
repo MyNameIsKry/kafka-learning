@@ -22,15 +22,18 @@ flowchart TB
   Train --> Artifacts[Model checkpoint + preprocessing artifacts]
   Split --> Replay[Transaction Simulator / Kafka Producer]
   Split --> Labels[Ground truth store - offline only]
-  Replay --> Raw[(Kafka: transactions.raw - business event, full balances)]
+  Replay --> EventStore[(KurrentDB: immutable events)]
+  EventStore --> Relay[Go persistent subscription relay]
+  Relay --> Raw[(Kafka: transactions.raw - business event, full balances)]
   Raw --> TransactionSink[Raw transaction MongoDB sink]
   TransactionSink --> Mongo
   Raw --> Consumer[Go inference consumer]
   Artifacts -. load .-> Consumer
   Consumer --> Graph[Graph state + subgraph builder + GATv2 inference]
   Graph --> Consumer
-  Consumer --> Scored[(Kafka: transactions.scored)]
-  Consumer --> Anomalies[(Kafka: transactions.anomalies)]
+  Consumer --> EventStore
+  Relay --> Scored[(Kafka: transactions.scored)]
+  Relay --> Anomalies[(Kafka: transactions.anomalies)]
   Scored --> Sink[MongoDB Sink]
   Sink --> Mongo[(MongoDB)]
   Anomalies --> Alert[Alert consumer / alert storage]
@@ -47,9 +50,12 @@ flowchart TB
 - Runtime producer, inference consumer, MongoDB sinks và API được triển khai bằng
   Go. Offline preparation/evaluation có thể tiếp tục dùng Python vì không nằm
   trong runtime streaming.
-- Kafka topics là **event store/source of truth**. MongoDB chỉ là read-model
-  projection để truy vấn dashboard; projection phải có thể rebuild từ Kafka
-  bằng consumer group mới.
+- KurrentDB (EventStoreDB) là **event store/source of truth**. Raw, scored,
+  anomaly và DLQ phải append vào KurrentDB trước; chỉ relay được publish Kafka.
+  Relay dùng persistent subscription và ACK sau Kafka acknowledge (at-least-once).
+  MongoDB chỉ là read-model projection; rebuild qua KurrentDB → Kafka → sinks.
+  Stream event bất biến dùng ID ổn định và expected revision NoStream; payload
+  xung đột phải fail, không overwrite. Labels chỉ offline, không vào event store.
 - GATv2 được tích hợp qua Go inference interface trước; MVP dùng mock engine.
   Việc đưa checkpoint/model thật vào interface vẫn thuộc phạm vi AI.
 
@@ -257,7 +263,7 @@ def to_model_input(raw: RawTransactionEvent) -> ModelInputDTO:
 3. **Hai nhánh độc lập** đọc `transactions.raw`: (a) MongoDB raw sink lưu giao dịch nghiệp vụ, (b) Go inference consumer `FetchMessage` theo manual commit, validate schema, **whitelist field để tạo ModelInputDTO** rồi chuyển qua inference interface.
 4. Adapter gọi `InferenceEngine.predict(model_input_batch)` do nhóm AI cung cấp. **Training và inference dùng cùng feature schema an toàn.** Engine cập nhật graph window, tạo subgraph và thực hiện GATv2 inference.
 5. Result publisher ghi dự đoán vào `transactions.scored`, và thêm `transactions.anomalies` với giao dịch bị đánh dấu.
-6. Inference consumer chỉ commit Kafka offset khi các kết quả publish cần thiết đã được xác nhận **và** trạng thái graph có thể khôi phục tương ứng. **Raw sink dùng offset của consumer group riêng**, commit sau khi MongoDB xác nhận upsert.
+6. Inference consumer chỉ commit Kafka offset khi các kết quả append KurrentDB cần thiết đã được xác nhận **và** trạng thái graph có thể khôi phục tương ứng. Relay chịu trách nhiệm chuyển output sang Kafka và ACK subscription sau Kafka acknowledge. **Raw sink dùng offset của consumer group riêng**, commit sau khi MongoDB xác nhận upsert.
 7. MongoDB sink tiêu thụ `transactions.scored`, `upsert` theo `(transactionId, modelVersion)`, rồi commit sink offset khi DB xác nhận.
 8. Alert consumer lưu cảnh báo; Dashboard truy vấn qua Backend API.
 

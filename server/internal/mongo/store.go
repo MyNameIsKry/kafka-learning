@@ -70,8 +70,8 @@ func (s *Store) Close(ctx context.Context) error {
 	return s.client.Disconnect(ctx)
 }
 
-// UpsertRaw projects a raw Kafka event into MongoDB. Kafka remains the source
-// of truth; this collection is rebuildable with a new sink consumer group.
+// UpsertRaw projects a raw Kafka event into MongoDB. KurrentDB owns event
+// history; this collection is rebuildable through the relay and a new sink group.
 func (s *Store) UpsertRaw(ctx context.Context, event events.RawTransactionEvent) error {
 	_, err := s.transactions.UpdateOne(ctx,
 		bson.D{{Key: "transactionId", Value: event.TransactionID}},

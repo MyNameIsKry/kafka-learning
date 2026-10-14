@@ -10,6 +10,7 @@ import (
 
 	"github.com/segmentio/kafka-go"
 	"server/internal/events"
+	"server/internal/eventstore"
 	"server/internal/inference"
 	"server/internal/kafkaio"
 	pipelinemetrics "server/internal/metrics"
@@ -18,6 +19,8 @@ import (
 func main() {
 	var (
 		brokers      = flag.String("bootstrap-servers", "localhost:9092", "Kafka bootstrap servers")
+		connection   = flag.String("eventstore", eventstore.DefaultConnection, "KurrentDB connection string")
+		prefix       = flag.String("stream-prefix", eventstore.Prefix, "event stream namespace")
 		rawTopic     = flag.String("topic", "transactions.raw", "raw input topic")
 		groupID      = flag.String("group-id", "gatv2-inference-group", "Kafka consumer group")
 		scoredTopic  = flag.String("scored-topic", "transactions.scored", "scored output topic")
@@ -43,13 +46,28 @@ func main() {
 		StartOffset: kafka.FirstOffset, MinBytes: 1, MaxBytes: 10e6,
 		MaxWait: 250 * time.Millisecond,
 	})
-	scoredWriter := kafkaio.NewWriter(addresses, *scoredTopic)
-	anomalyWriter := kafkaio.NewWriter(addresses, *anomalyTopic)
-	dlqWriter := kafkaio.NewWriter(addresses, *dlqTopic)
+	scoredWriter, err := eventstore.NewWriter(*connection, *scoredTopic)
+	if err != nil {
+		log.Fatal(err)
+	}
+	anomalyWriter, err := eventstore.NewWriter(*connection, *anomalyTopic)
+	if err != nil {
+		log.Fatal(err)
+	}
+	dlqWriter, err := eventstore.NewWriter(*connection, *dlqTopic)
+	if err != nil {
+		log.Fatal(err)
+	}
 	defer reader.Close()
 	defer scoredWriter.Close()
 	defer anomalyWriter.Close()
 	defer dlqWriter.Close()
+	scoredWriter.StreamPrefix = *prefix
+	anomalyWriter.StreamPrefix = *prefix
+	dlqWriter.StreamPrefix = *prefix
+	scoredWriter.EventType = "TransactionScored"
+	anomalyWriter.EventType = "TransactionAnomalyDetected"
+	dlqWriter.EventType = "InvalidEventRecorded"
 
 	engine := inference.MockEngine{Score: *score, Threshold: *threshold, ModelVersion: *modelVersion}
 	metrics, err := pipelinemetrics.New("inference", *metricsPort)
@@ -101,7 +119,7 @@ func (cache *dedupeCache) Remember(event events.RawTransactionEvent) {
 	}
 }
 
-func processWithRetry(ctx context.Context, reader *kafka.Reader, message kafka.Message, engine inference.Engine, scoredWriter, anomalyWriter, dlqWriter *kafka.Writer, scoredTopic, anomalyTopic string, maxRetries int, seen *dedupeCache, metrics *pipelinemetrics.Metrics) error {
+func processWithRetry(ctx context.Context, reader *kafka.Reader, message kafka.Message, engine inference.Engine, scoredWriter, anomalyWriter, dlqWriter kafkaio.Publisher, scoredTopic, anomalyTopic string, maxRetries int, seen *dedupeCache, metrics *pipelinemetrics.Metrics) error {
 	for attempt := 0; ; attempt++ {
 		started := time.Now()
 		err := processMessage(ctx, message, engine, scoredWriter, anomalyWriter, dlqWriter, scoredTopic, anomalyTopic, seen, metrics)
@@ -126,7 +144,7 @@ func processWithRetry(ctx context.Context, reader *kafka.Reader, message kafka.M
 	}
 }
 
-func processMessage(ctx context.Context, message kafka.Message, engine inference.Engine, scoredWriter, anomalyWriter, dlqWriter *kafka.Writer, scoredTopic, anomalyTopic string, seen *dedupeCache, metrics *pipelinemetrics.Metrics) error {
+func processMessage(ctx context.Context, message kafka.Message, engine inference.Engine, scoredWriter, anomalyWriter, dlqWriter kafkaio.Publisher, scoredTopic, anomalyTopic string, seen *dedupeCache, metrics *pipelinemetrics.Metrics) error {
 	raw, err := events.DecodeRaw(message.Value)
 	if err != nil {
 		return publishDLQ(ctx, dlqWriter, message, "INVALID_SCHEMA", err.Error())
@@ -147,6 +165,9 @@ func processMessage(ctx context.Context, message kafka.Message, engine inference
 		return errors.New("inference output does not map to input transaction")
 	}
 	prediction := predictions[0]
+	if err := prediction.Validate(); err != nil {
+		return err
+	}
 	payload, err := events.Encode(prediction)
 	if err != nil {
 		return err
@@ -154,18 +175,18 @@ func processMessage(ctx context.Context, message kafka.Message, engine inference
 	if err := kafkaio.Publish(ctx, scoredWriter, prediction.TransactionID, payload); err != nil {
 		return fmt.Errorf("publish scored: %w", err)
 	}
-	metrics.Published(scoredTopic)
+	metrics.Appended(scoredTopic)
 	if prediction.IsAnomaly {
 		if err := kafkaio.Publish(ctx, anomalyWriter, prediction.TransactionID, payload); err != nil {
 			return fmt.Errorf("publish anomaly: %w", err)
 		}
-		metrics.Published(anomalyTopic)
+		metrics.Appended(anomalyTopic)
 	}
 	seen.Remember(raw)
 	return nil
 }
 
-func publishDLQ(ctx context.Context, writer *kafka.Writer, message kafka.Message, code, detail string) error {
+func publishDLQ(ctx context.Context, writer kafkaio.Publisher, message kafka.Message, code, detail string) error {
 	event := events.DLQEvent{
 		SourceTopic: message.Topic, SourcePartition: message.Partition, SourceOffset: message.Offset,
 		ErrorCode: code, ErrorMessage: detail, FailedAt: time.Now().UTC(),

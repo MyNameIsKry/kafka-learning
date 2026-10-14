@@ -18,6 +18,7 @@ type Metrics struct {
 	server    *http.Server
 
 	published *prometheus.CounterVec
+	appended  *prometheus.CounterVec
 	stored    prometheus.Counter
 	committed prometheus.Counter
 	failures  *prometheus.CounterVec
@@ -39,17 +40,18 @@ func New(component string, port int) (*Metrics, error) {
 		component: component,
 		registry:  registry,
 		published: prometheus.NewCounterVec(prometheus.CounterOpts{Name: "pipeline_published_records_total", Help: "Acknowledged Kafka publishes", ConstLabels: prometheus.Labels{"component": component}}, []string{"topic"}),
+		appended:  prometheus.NewCounterVec(prometheus.CounterOpts{Name: "pipeline_eventstore_appended_records_total", Help: "Acknowledged KurrentDB appends including idempotent retries", ConstLabels: prometheus.Labels{"component": component}}, []string{"topic"}),
 		stored:    prometheus.NewCounter(prometheus.CounterOpts{Name: "pipeline_stored_records_total", Help: "Acknowledged MongoDB projections", ConstLabels: prometheus.Labels{"component": component}}),
 		committed: prometheus.NewCounter(prometheus.CounterOpts{Name: "pipeline_committed_records_total", Help: "Kafka input records committed", ConstLabels: prometheus.Labels{"component": component}}),
 		failures:  prometheus.NewCounterVec(prometheus.CounterOpts{Name: "pipeline_failures_total", Help: "Failed processing attempts", ConstLabels: prometheus.Labels{"component": component}}, []string{"stage"}),
 		retries:   prometheus.NewCounter(prometheus.CounterOpts{Name: "pipeline_retries_total", Help: "Scheduled retries", ConstLabels: prometheus.Labels{"component": component}}),
 		inference: prometheus.NewHistogram(prometheus.HistogramOpts{Name: "pipeline_inference_seconds", Help: "Inference duration", ConstLabels: prometheus.Labels{"component": component}}),
 		batch:     prometheus.NewHistogram(prometheus.HistogramOpts{Name: "pipeline_batch_seconds", Help: "Batch or message processing duration", ConstLabels: prometheus.Labels{"component": component}}),
-		delivery:  prometheus.NewHistogram(prometheus.HistogramOpts{Name: "pipeline_delivery_seconds", Help: "Kafka publish acknowledgement duration", ConstLabels: prometheus.Labels{"component": component}}),
+		delivery:  prometheus.NewHistogram(prometheus.HistogramOpts{Name: "pipeline_delivery_seconds", Help: "Durable write acknowledgement duration", ConstLabels: prometheus.Labels{"component": component}}),
 		recordAge: prometheus.NewHistogram(prometheus.HistogramOpts{Name: "pipeline_input_to_completion_seconds", Help: "Kafka input timestamp to committed projection", ConstLabels: prometheus.Labels{"component": component}}),
 		lag:       prometheus.NewGauge(prometheus.GaugeOpts{Name: "pipeline_consumer_lag", Help: "Kafka reader lag", ConstLabels: prometheus.Labels{"component": component}}),
 	}
-	for _, collector := range []prometheus.Collector{result.published, result.stored, result.committed, result.failures, result.retries, result.inference, result.batch, result.delivery, result.recordAge, result.lag} {
+	for _, collector := range []prometheus.Collector{result.published, result.appended, result.stored, result.committed, result.failures, result.retries, result.inference, result.batch, result.delivery, result.recordAge, result.lag} {
 		if err := registry.Register(collector); err != nil {
 			return nil, err
 		}
@@ -62,6 +64,7 @@ func New(component string, port int) (*Metrics, error) {
 }
 
 func (m *Metrics) Published(topic string)    { m.published.WithLabelValues(topic).Inc() }
+func (m *Metrics) Appended(topic string)     { m.appended.WithLabelValues(topic).Inc() }
 func (m *Metrics) Stored()                   { m.stored.Inc() }
 func (m *Metrics) Committed(count int)       { m.committed.Add(float64(count)) }
 func (m *Metrics) Failure(stage string)      { m.failures.WithLabelValues(stage).Inc() }
