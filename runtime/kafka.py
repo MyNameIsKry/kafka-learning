@@ -30,6 +30,7 @@ def collect_batch(consumer: KafkaConsumer, batch_size: int, max_wait_ms: int) ->
                         partition=topic_partition.partition,
                         offset=message.offset,
                         value=message.value,
+                        timestamp_ms=message.timestamp,
                     )
                 )
         if not polled or max_wait_ms == 0 or monotonic() >= deadline:

@@ -4,6 +4,7 @@ import unittest
 
 from consumer.adapter import ConsumerRecord
 from sink.adapter import process_batch
+from runtime.metrics import PipelineMetrics
 
 
 def raw_payload():
@@ -70,6 +71,19 @@ class FakeDLQ:
 
 
 class SinkTests(unittest.TestCase):
+    def test_storage_metrics_count_only_acknowledged_upserts(self):
+        metrics = PipelineMetrics("sink_raw")
+        store = FakeStore()
+        self.assertEqual(process_batch([record(raw_payload())], "raw", store, FakeDLQ(), metrics), (1, 0))
+        labels = {"component": "sink_raw"}
+        self.assertEqual(metrics.registry.get_sample_value("pipeline_stored_records_total", labels), 1)
+        class FailingStore(FakeStore):
+            def upsert_raw(self, _event):
+                raise RuntimeError("no write acknowledgement")
+        with self.assertRaises(RuntimeError):
+            process_batch([record(raw_payload())], "raw", FailingStore(), FakeDLQ(), metrics)
+        self.assertEqual(metrics.registry.get_sample_value("pipeline_stored_records_total", labels), 1)
+
     def test_decode_failure_dlq_preserves_original_bytes(self) -> None:
         for kind in ("raw", "prediction", "alert"):
             for value in (b"broken-json", b"\xff\x00"):

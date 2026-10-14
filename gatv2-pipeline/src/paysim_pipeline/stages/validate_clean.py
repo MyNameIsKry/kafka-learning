@@ -22,6 +22,9 @@ def run(frame: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
     checks = {
         "step": frame["step"] < 1,
         "amount": frame["amount"] < 0,
+        **{column: frame[column] < 0 for column in (
+            "oldbalanceOrg", "newbalanceOrig", "oldbalanceDest", "newbalanceDest"
+        )},
         "type": ~frame["type"].isin(TRANSACTION_TYPES),
         "isFraud": ~frame["isFraud"].isin((0, 1)),
         "isFlaggedFraud": ~frame["isFlaggedFraud"].isin((0, 1)),
@@ -42,4 +45,3 @@ def run(frame: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
     if accepted["sourceRowIndex"].duplicated().any():
         raise ValueError("sourceRowIndex must uniquely identify source rows")
     return accepted, rejected
-

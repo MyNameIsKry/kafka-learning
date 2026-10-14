@@ -5,20 +5,30 @@ PIPELINE_CONFIG ?= gatv2-pipeline/configs/pipeline.toml
 PIPELINE_OUTPUT_DIR ?= gatv2-pipeline/artifacts/paysim
 TRAIN_MODULE ?= paysim_pipeline.train
 TRAIN_CONFIG ?= gatv2-pipeline/configs/train.toml
+GROUND_TRUTH ?= data/ground_truth.csv
+BOOTSTRAP_SERVERS ?= localhost:9092
+GROUP_ID ?=
+MODEL_VERSION ?= mock-v1
+MOCK_SCORE ?= 0.1
+MOCK_THRESHOLD ?= 0.8
+MAX_RETRIES ?= 3
+DATASET_VERSION ?=
+MAX_EVENTS ?= 0
+METRICS_PORT ?= 0
 
-.PHONY: help kafka-up kafka-down gateway inventory email shipping inventory-2 web vet build \
-	shell dataset-download dataset-check eda prepare paysim-pipeline train test
+.PHONY: help kafka-up kafka-down topics api producer consumer raw-sink prediction-sink alert-consumer web vet build contracts-test go-test python-legacy-test paysim-pipeline pipeline-test benchmark evaluate shell dataset-download dataset-check prepare test train eda
 
 help:
 	@printf '%s\n' \
-	  'Kafka demo:' \
-	  '  make kafka-up             Start Kafka and MongoDB containers' \
-	  '  make kafka-down           Stop containers' \
-	  '  make gateway              Run the API gateway' \
-	  '  make inventory|email|shipping  Run a demo service' \
-	  '  make inventory-2          Run a second inventory instance' \
-	  '  make web                  Run the frontend dev server' \
-	  '  make vet|build            Check or build Go services' \
+	  'Kafka/Python pipeline:' \
+	  '  make kafka-up             Start Kafka, Kafka UI and MongoDB' \
+	  '  make api|web              Run API or dashboard' \
+	  '  make producer CSV=...     Replay PaySim into Kafka (Go)' \
+	  '  make consumer             Run mock inference consumer (Go)' \
+	  '  make raw-sink|prediction-sink|alert-consumer' \
+	  '  make contracts-test       Run Go runtime and Python regression tests' \
+	  '  make benchmark RAW_TOPIC=... SCORED_TOPIC=...' \
+	  '  make evaluate GROUND_TRUTH=... PREDICTIONS=... THRESHOLD=...' \
 	  '' \
 	  'PaySim pipeline:' \
 	  '  make shell               Enter the Nix PaySim development shell' \
@@ -31,27 +41,38 @@ help:
 	  '' \
 	  'Overrides: PAYSIM_DATA_DIR, PAYSIM_CSV, PIPELINE_CONFIG,' \
 	  '           PIPELINE_OUTPUT_DIR, TRAIN_MODULE, TRAIN_CONFIG'
+	  '  make pipeline-test        Run parity tests' \
+	  '  make train                Prepare data, then run configured trainer'
 
 kafka-up:
-	docker compose up -d
+	docker compose run --rm --no-deps kafka-volume-init
+	docker compose up -d kafka kafka-ui mongo
+	$(MAKE) topics
 
 kafka-down:
 	docker compose down
 
-gateway:
-	cd server && go run ./cmd/gateway
+topics:
+	docker compose run --rm --no-deps kafka-init
 
-inventory:
-	cd server && go run ./cmd/inventory
+api:
+	cd server && go run ./cmd/api
 
-email:
-	cd server && WORK_MS=700 go run ./cmd/email
+producer:
+	test -n "$(CSV)" || (echo "Usage: make producer CSV=path/to/PS_*.csv" && exit 1)
+	cd server && go run ./cmd/producer --bootstrap-servers "$(BOOTSTRAP_SERVERS)" --csv "$(abspath $(CSV))" --ground-truth-path "$(abspath $(GROUND_TRUTH))" --dataset-version "$(DATASET_VERSION)" --max-events "$(MAX_EVENTS)" --metrics-port "$(METRICS_PORT)"
 
-shipping:
-	cd server && WORK_MS=400 go run ./cmd/shipping
+consumer:
+	cd server && go run ./cmd/inference --bootstrap-servers "$(BOOTSTRAP_SERVERS)" --group-id "$(if $(GROUP_ID),$(GROUP_ID),gatv2-inference-group)" --mock-score "$(MOCK_SCORE)" --mock-threshold "$(MOCK_THRESHOLD)" --model-version "$(MODEL_VERSION)" --max-retries "$(MAX_RETRIES)" --metrics-port "$(METRICS_PORT)"
 
-inventory-2:
-	cd server && ADDR=:8084 INSTANCE=inventory-2 go run ./cmd/inventory
+raw-sink:
+	cd server && go run ./cmd/sink --kind raw --bootstrap-servers "$(BOOTSTRAP_SERVERS)" --group-id "$(if $(GROUP_ID),$(GROUP_ID),mongodb-raw-sink-group)" --max-retries "$(MAX_RETRIES)" --metrics-port "$(METRICS_PORT)"
+
+prediction-sink:
+	cd server && go run ./cmd/sink --kind prediction --bootstrap-servers "$(BOOTSTRAP_SERVERS)" --group-id "$(if $(GROUP_ID),$(GROUP_ID),mongodb-sink-group)" --max-retries "$(MAX_RETRIES)" --metrics-port "$(METRICS_PORT)"
+
+alert-consumer:
+	cd server && go run ./cmd/sink --kind alert --bootstrap-servers "$(BOOTSTRAP_SERVERS)" --group-id "$(if $(GROUP_ID),$(GROUP_ID),alert-group)" --max-retries "$(MAX_RETRIES)" --metrics-port "$(METRICS_PORT)"
 
 web:
 	cd web && npm run dev
@@ -62,12 +83,32 @@ vet:
 build:
 	cd server && go build ./...
 
+contracts-test:
+	$(MAKE) go-test
+	$(MAKE) python-legacy-test
+
+go-test:
+	cd server && go test ./...
+
+python-legacy-test:
+	python3 -m unittest discover -s tests -p 'test_*.py'
+
+pipeline-test:
+	PYTHONPATH=gatv2-pipeline/src:$$PYTHONPATH python3 -m unittest discover -s gatv2-pipeline/tests -p 'test_*.py'
+
+benchmark:
+	test -n "$(RAW_TOPIC)" -a -n "$(SCORED_TOPIC)" || (echo "Usage: make benchmark RAW_TOPIC=bench.raw SCORED_TOPIC=bench.scored" && exit 1)
+	python3 -m benchmark.main --raw-topic "$(RAW_TOPIC)" --scored-topic "$(SCORED_TOPIC)"
+
+evaluate:
+	test -n "$(GROUND_TRUTH)" -a -n "$(PREDICTIONS)" -a -n "$(THRESHOLD)" || (echo "Usage: make evaluate GROUND_TRUTH=... PREDICTIONS=... THRESHOLD=..." && exit 1)
+	python3 -m evaluation.main --ground-truth "$(GROUND_TRUTH)" --predictions "$(PREDICTIONS)" --threshold "$(THRESHOLD)" $(if $(OUTPUT),--output "$(OUTPUT)",)
+
 shell:
 	$(NIX) develop .#paysim
 
 dataset-download:
-	$(NIX) develop .#paysim --command python gatv2-pipeline/scripts/download_dataset.py \
-		--output-dir $(abspath $(PAYSIM_DATA_DIR))
+	$(NIX) develop .#paysim --command python gatv2-pipeline/scripts/download_dataset.py --output-dir $(abspath $(PAYSIM_DATA_DIR))
 
 dataset-check:
 	test -f $(PAYSIM_CSV) || (echo "Không tìm thấy $(PAYSIM_CSV); chạy 'make dataset-download' hoặc đặt PAYSIM_CSV đúng đường dẫn." >&2; exit 1)
@@ -80,10 +121,7 @@ eda: dataset-check
 		--eda-only
 
 prepare: dataset-check
-	$(NIX) develop .#paysim --command env PYTHONPATH=gatv2-pipeline/src python -m paysim_pipeline.cli \
-		--config $(PIPELINE_CONFIG) \
-		--input-csv $(abspath $(PAYSIM_CSV)) \
-		--output-dir $(abspath $(PIPELINE_OUTPUT_DIR))
+	$(NIX) develop .#paysim --command env PYTHONPATH=gatv2-pipeline/src python -m paysim_pipeline.cli --config $(PIPELINE_CONFIG) --input-csv $(abspath $(PAYSIM_CSV)) --output-dir $(abspath $(PIPELINE_OUTPUT_DIR))
 
 paysim-pipeline: prepare
 

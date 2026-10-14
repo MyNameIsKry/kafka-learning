@@ -69,5 +69,6 @@ the inference service.
 ## `transactions.dlq`
 
 `DLQEvent` records the source topic, partition, offset, validation error and
-the original decoded payload. A malformed payload that cannot be decoded can
-be stored as an empty/object-compatible payload by the error handler.
+the original decoded payload. If JSON/UTF-8 decoding fails, runtime handlers
+retain the exact original bytes as `originalPayload.rawBase64` with
+`originalPayload.encoding="base64"`.

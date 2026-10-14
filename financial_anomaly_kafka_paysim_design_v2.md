@@ -25,7 +25,7 @@ flowchart TB
   Replay --> Raw[(Kafka: transactions.raw - business event, full balances)]
   Raw --> TransactionSink[Raw transaction MongoDB sink]
   TransactionSink --> Mongo
-  Raw --> Consumer[Python inference consumer]
+  Raw --> Consumer[Go inference consumer]
   Artifacts -. load .-> Consumer
   Consumer --> Graph[Graph state + subgraph builder + GATv2 inference]
   Graph --> Consumer
@@ -41,6 +41,17 @@ flowchart TB
 ```
 
 **MVP:** 1 Kafka broker, 1 partition/topic, 1 inference consumer, MongoDB. Chưa thiết kế mở rộng consumer song song khi graph state còn chia sẻ trong RAM.
+
+### Quyết định triển khai runtime
+
+- Runtime producer, inference consumer, MongoDB sinks và API được triển khai bằng
+  Go. Offline preparation/evaluation có thể tiếp tục dùng Python vì không nằm
+  trong runtime streaming.
+- Kafka topics là **event store/source of truth**. MongoDB chỉ là read-model
+  projection để truy vấn dashboard; projection phải có thể rebuild từ Kafka
+  bằng consumer group mới.
+- GATv2 được tích hợp qua Go inference interface trước; MVP dùng mock engine.
+  Việc đưa checkpoint/model thật vào interface vẫn thuộc phạm vi AI.
 
 ## 3. Schema thực tế PaySim
 
@@ -243,7 +254,7 @@ def to_model_input(raw: RawTransactionEvent) -> ModelInputDTO:
 
 1. **Replay Producer** đọc CSV theo `(step, sourceRowIndex)` và giữ `transactionId` ổn định; publish event nghiệp vụ có đầy đủ bốn balance; tách nhãn vào ground-truth store.
 2. Producer serialize `RawTransactionEvent`, publish vào `transactions.raw`, theo dõi delivery acknowledgments và số event lỗi.
-3. **Hai nhánh độc lập** đọc `transactions.raw`: (a) MongoDB raw sink lưu giao dịch nghiệp vụ, (b) Python inference consumer `poll/consume` theo micro-batch, validate schema, **whitelist field để tạo ModelInputDTO** rồi chuyển thành DataFrame nếu cần.
+3. **Hai nhánh độc lập** đọc `transactions.raw`: (a) MongoDB raw sink lưu giao dịch nghiệp vụ, (b) Go inference consumer `FetchMessage` theo manual commit, validate schema, **whitelist field để tạo ModelInputDTO** rồi chuyển qua inference interface.
 4. Adapter gọi `InferenceEngine.predict(model_input_batch)` do nhóm AI cung cấp. **Training và inference dùng cùng feature schema an toàn.** Engine cập nhật graph window, tạo subgraph và thực hiện GATv2 inference.
 5. Result publisher ghi dự đoán vào `transactions.scored`, và thêm `transactions.anomalies` với giao dịch bị đánh dấu.
 6. Inference consumer chỉ commit Kafka offset khi các kết quả publish cần thiết đã được xác nhận **và** trạng thái graph có thể khôi phục tương ứng. **Raw sink dùng offset của consumer group riêng**, commit sau khi MongoDB xác nhận upsert.

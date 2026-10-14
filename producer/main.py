@@ -14,6 +14,7 @@ from typing import Iterable, Protocol
 
 from .kafka_publisher import KafkaRawPublisher
 from .paysim import PreparedTransaction, prepare_paysim_csv, write_ground_truth
+from runtime.metrics import PipelineMetrics, add_metrics_arguments
 
 LOGGER = logging.getLogger("paysim-producer")
 
@@ -47,6 +48,8 @@ def replay(
     ground_truth_path: str,
     events_per_second: float = 0,
     continue_on_error: bool = False,
+    metrics=None,
+    publish_topic: str = "transactions.raw",
 ) -> ReplayStats:
     """Persist labels and publish validated raw events in order.
 
@@ -91,15 +94,24 @@ def replay(
                         time.sleep(delay)
                     next_send_at = max(next_send_at + interval, time.monotonic())
 
+                started = time.monotonic()
                 try:
                     publisher.publish(record.raw)
                 except Exception as exc:
+                    if metrics is not None:
+                        metrics.failure("publish")
+                        metrics.failed_records.inc()
                     stats.failed += 1
                     if not continue_on_error:
                         raise ReplayPublishError(record.raw.transactionId, stats, exc) from exc
                     LOGGER.exception("publish failed for %s", record.raw.transactionId)
                     continue
+                finally:
+                    if metrics is not None:
+                        metrics.delivery.observe(time.monotonic() - started)
                 stats.published += 1
+                if metrics is not None:
+                    metrics.published_record(publish_topic)
 
             csv_file.flush()
             os.fsync(csv_file.fileno())
@@ -140,6 +152,7 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="validate and write ground truth without connecting to Kafka",
     )
+    add_metrics_arguments(parser)
     return parser
 
 
@@ -160,6 +173,8 @@ def main() -> int:
             return 0
 
         publisher = KafkaRawPublisher(args.bootstrap_servers.split(","), args.topic)
+        metrics = PipelineMetrics("producer", args.metrics_port, args.metrics_host)
+        LOGGER.info("replay config: dataset_version=%s target_rate=%s topic=%s records=%d", args.dataset_version, args.events_per_second, args.topic, prepared.count)
         try:
             stats = replay(
                 prepared.iter_records(),
@@ -167,6 +182,8 @@ def main() -> int:
                 ground_truth_path=args.ground_truth_path,
                 events_per_second=args.events_per_second,
                 continue_on_error=args.continue_on_error,
+                metrics=metrics,
+                publish_topic=args.topic,
             )
         except ReplayPublishError as exc:
             LOGGER.error(
@@ -179,6 +196,7 @@ def main() -> int:
             return 1
         finally:
             publisher.close()
+            metrics.close()
 
         LOGGER.info(
             "replay finished: attempted=%d published=%d failed=%d",

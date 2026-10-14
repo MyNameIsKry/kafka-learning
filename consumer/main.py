@@ -12,6 +12,7 @@ from .adapter import SeenTransactionCache, process_batch
 from .publisher import KafkaEventPublisher
 from inference.mock_engine import MockInferenceEngine
 from runtime.kafka import collect_batch, commit_batch
+from runtime.metrics import PipelineMetrics, add_metrics_arguments
 
 LOGGER = logging.getLogger("inference-consumer")
 
@@ -28,6 +29,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--mock-score", type=float, default=0.1)
     parser.add_argument("--mock-threshold", type=float, default=0.8)
     parser.add_argument("--model-version", default="mock-v1")
+    parser.add_argument("--scored-topic", default="transactions.scored")
+    parser.add_argument("--anomalies-topic", default="transactions.anomalies")
+    parser.add_argument("--dlq-topic", default="transactions.dlq")
+    add_metrics_arguments(parser)
     return parser
 
 
@@ -48,9 +53,12 @@ def run(args: argparse.Namespace) -> int:
         enable_auto_commit=False,
         auto_offset_reset="earliest",
         max_poll_records=args.batch_size,
+        request_timeout_ms=30_000,
         value_deserializer=lambda value: value,
     )
-    publisher = KafkaEventPublisher(args.bootstrap_servers.split(","))
+    metrics = PipelineMetrics("inference", args.metrics_port, args.metrics_host)
+    publisher = KafkaEventPublisher(args.bootstrap_servers.split(","), metrics=metrics,
+        scored_topic=args.scored_topic, anomalies_topic=args.anomalies_topic, dlq_topic=args.dlq_topic)
     engine = MockInferenceEngine(
         score=args.mock_score,
         threshold=args.mock_threshold,
@@ -58,22 +66,28 @@ def run(args: argparse.Namespace) -> int:
     )
 
     try:
+        LOGGER.info("runtime config: model=%s batch_size=%d max_wait_ms=%d topic=%s group=%s metrics_port=%d", args.model_version, args.batch_size, args.max_wait_ms, args.topic, args.group_id, args.metrics_port)
         seen_transactions = SeenTransactionCache(args.dedupe_cache_size)
         while True:
             records = collect_batch(consumer, args.batch_size, args.max_wait_ms)
+            metrics.sample_lag(consumer)
             if not records:
                 continue
 
             attempts = 0
             while True:
+                started = time.monotonic()
+                attempt_elapsed = None
                 try:
                     accepted, dlq_count = process_batch(
                         records,
                         engine,
                         publisher,
                         seen_transactions,
+                        metrics,
                     )
                     commit_batch(consumer, records)
+                    metrics.completed(records)
                     LOGGER.info(
                         "batch complete: input=%d accepted=%d dlq=%d",
                         len(records),
@@ -82,19 +96,26 @@ def run(args: argparse.Namespace) -> int:
                     )
                     break
                 except Exception:
+                    attempt_elapsed = time.monotonic() - started
+                    metrics.failure("batch")
+                    metrics.failed_records.inc(len(records))
                     attempts += 1
                     if attempts > args.max_retries:
                         LOGGER.exception("batch failed after %d retries; stopping without commit", attempts - 1)
                         return 1
                     delay = min(2**attempts, 30)
+                    metrics.retries.inc()
                     LOGGER.exception("batch failed; retry %d/%d in %ds", attempts, args.max_retries, delay)
                     time.sleep(delay)
+                finally:
+                    metrics.batch.observe(attempt_elapsed if attempt_elapsed is not None else time.monotonic() - started)
     except KeyboardInterrupt:
         LOGGER.info("consumer stopped")
         return 0
     finally:
         consumer.close()
         publisher.close()
+        metrics.close()
 
 
 def main() -> int:
