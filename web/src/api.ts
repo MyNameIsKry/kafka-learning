@@ -36,9 +36,11 @@ export type Alert = {
   reasonCodes: string[]
 }
 
-type ListResponse<T> = {
+export type Page<T> = {
   items: T[]
   limit: number
+  offset: number
+  hasMore: boolean
 }
 
 // Use Vite's same-origin proxy during local development; set this for a deployed UI.
@@ -56,12 +58,13 @@ export function getSummary(): Promise<Summary> {
   return request<Summary>('/api/v1/summary')
 }
 
-export async function getTransactions(limit = 12): Promise<Transaction[]> {
-  const response = await request<ListResponse<Transaction>>(`/api/v1/transactions?limit=${limit}`)
-  return response.items
+export async function getTransactions(limit = 12, offset = 0, status = ''): Promise<Page<Transaction>> {
+  const query = new URLSearchParams({ limit: String(limit), offset: String(offset) })
+  if (status) query.set('status', status)
+  return request<Page<Transaction>>(`/api/v1/transactions?${query.toString()}`)
 }
 
-export async function getAlerts(limit = 8): Promise<Alert[]> {
-  const response = await request<ListResponse<Alert>>(`/api/v1/alerts?limit=${limit}`)
-  return response.items
+export function getAlerts(limit = 8, offset = 0): Promise<Page<Alert>> {
+  const query = new URLSearchParams({ limit: String(limit), offset: String(offset) })
+  return request<Page<Alert>>(`/api/v1/alerts?${query.toString()}`)
 }

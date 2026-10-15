@@ -31,6 +31,10 @@ func NewWriter(brokers []string, topic string) *kafka.Writer {
 	}
 }
 
-func Publish(ctx context.Context, writer *kafka.Writer, key string, value []byte) error {
+type Publisher interface {
+	WriteMessages(context.Context, ...kafka.Message) error
+}
+
+func Publish(ctx context.Context, writer Publisher, key string, value []byte) error {
 	return writer.WriteMessages(ctx, kafka.Message{Key: []byte(key), Value: value, Time: time.Now().UTC()})
 }

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 )
@@ -20,14 +21,22 @@ func (f fakeReader) Ping(context.Context) error { return f.pingErr }
 
 func (f fakeReader) Summary(context.Context) (Summary, error) { return f.summary, nil }
 
-func (f fakeReader) Transactions(_ context.Context, limit int, _ bool) ([]Transaction, error) {
+func (f fakeReader) Transactions(_ context.Context, limit, offset int, _ string) ([]Transaction, error) {
+	if offset >= len(f.transactions) {
+		return []Transaction{}, nil
+	}
+	f.transactions = f.transactions[offset:]
 	if limit < len(f.transactions) {
 		return f.transactions[:limit], nil
 	}
 	return f.transactions, nil
 }
 
-func (f fakeReader) Alerts(_ context.Context, limit int) ([]Alert, error) {
+func (f fakeReader) Alerts(_ context.Context, limit, offset int) ([]Alert, error) {
+	if offset >= len(f.alerts) {
+		return []Alert{}, nil
+	}
+	f.alerts = f.alerts[offset:]
 	if limit < len(f.alerts) {
 		return f.alerts[:limit], nil
 	}
@@ -88,5 +97,24 @@ func TestQueryValidationAndDatabaseFailure(t *testing.T) {
 	failing.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/readyz", nil))
 	if response.Code != http.StatusServiceUnavailable {
 		t.Fatalf("failed readiness status = %d", response.Code)
+	}
+}
+
+func TestPaginationAndStatusQuery(t *testing.T) {
+	reader := fakeReader{transactions: []Transaction{{TransactionID: "a"}, {TransactionID: "b"}}, alerts: []Alert{{TransactionID: "a"}, {TransactionID: "b"}}}
+	handler := NewHandler(reader, "*")
+	for _, path := range []string{
+		"/api/v1/transactions?limit=1&offset=1&status=anomaly",
+		"/api/v1/alerts?limit=1&offset=1",
+	} {
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, path, nil))
+		if response.Code != http.StatusOK {
+			t.Fatalf("%s status = %d", path, response.Code)
+		}
+		body := response.Body.String()
+		if !strings.Contains(body, `"offset":1`) || !strings.Contains(body, `"hasMore":false`) {
+			t.Fatalf("%s missing page metadata: %s", path, body)
+		}
 	}
 }

@@ -7,8 +7,11 @@ TRAIN_MODULE ?= paysim_pipeline.train
 TRAIN_CONFIG ?= gatv2-pipeline/configs/train.toml
 GROUND_TRUTH ?= data/ground_truth.csv
 BOOTSTRAP_SERVERS ?= localhost:9092
+KURRENTDB ?= kurrentdb://localhost:2113?tls=false
+RELAY_GROUP ?= financial-kafka-relay
+LOCUST ?= .venv/bin/locust
 GROUP_ID ?=
-MODEL_VERSION ?= mock-v1
+MODEL_VERSION ?= mock-onnx-v1
 ANOMALY_THRESHOLD ?= 0.8
 MODEL_PATH ?= gatv2-pipeline/artifacts/mock/anomaly_score.onnx
 MAX_RETRIES ?= 3
@@ -20,13 +23,19 @@ METRICS_PORT ?= 0
 
 help:
 	@printf '%s\n' \
-	  'Kafka/Python pipeline:' \
-	  '  make kafka-up             Start Kafka, Kafka UI and MongoDB' \
+	  'Go runtime / KurrentDB pipeline:' \
+	  '  make demo-infra           Start infrastructure for the unified server' \
+	  '  make server               Run API, projection, relay and ONNX model together' \
+	  '  make locust               Send HTTP transactions (install requirements-locust.txt)' \
+	  '  make kafka-up             Start KurrentDB, Kafka, Kafka UI and MongoDB' \
+	  '  make event-relay          Relay persisted KurrentDB events to Kafka' \
 	  '  make api|web              Run API or dashboard' \
 	  '  make producer CSV=...     Replay PaySim into Kafka (Go)' \
 	  '  make mock-onnx-export     Export mock ONNX model for Go inference' \
 	  '  make consumer             Run ONNX inference consumer (Go)' \
 	  '  make onnx-test            Test ONNX model through Go runtime' \
+	  '  make producer CSV=...     Append PaySim into KurrentDB (Go)' \
+	  '  make consumer             Run ONNX inference consumer (Go)' \
 	  '  make raw-sink|prediction-sink|alert-consumer' \
 	  '  make contracts-test       Run Go runtime and Python regression tests' \
 	  '  make benchmark RAW_TOPIC=... SCORED_TOPIC=...' \
@@ -48,7 +57,7 @@ help:
 
 kafka-up:
 	docker compose run --rm --no-deps kafka-volume-init
-	docker compose up -d kafka kafka-ui mongo
+	docker compose up -d kurrentdb kafka kafka-ui mongo
 	$(MAKE) topics
 
 kafka-down:
@@ -60,9 +69,26 @@ topics:
 api:
 	cd server && go run ./cmd/api
 
+.PHONY: demo-infra server locust
+demo-infra: kafka-up
+
+server:
+	test -f "$(MODEL_PATH)" || $(MAKE) mock-onnx-export MODEL_PATH="$(MODEL_PATH)"
+	$(NIX) develop .#paysim --command bash -c 'cd server && go run ./cmd/app --eventstore "$(KURRENTDB)" --bootstrap-servers "$(BOOTSTRAP_SERVERS)" --model-path "$(abspath $(MODEL_PATH))" --threshold "$(ANOMALY_THRESHOLD)" --model-version "$(MODEL_VERSION)"'
+
+locust:
+	$(LOCUST) -f locustfile.py --host http://localhost:8080
+
 producer:
 	test -n "$(CSV)" || (echo "Usage: make producer CSV=path/to/PS_*.csv" && exit 1)
-	cd server && go run ./cmd/producer --bootstrap-servers "$(BOOTSTRAP_SERVERS)" --csv "$(abspath $(CSV))" --ground-truth-path "$(abspath $(GROUND_TRUTH))" --dataset-version "$(DATASET_VERSION)" --max-events "$(MAX_EVENTS)" --metrics-port "$(METRICS_PORT)"
+	cd server && go run ./cmd/producer --eventstore "$(KURRENTDB)" --csv "$(abspath $(CSV))" --ground-truth-path "$(abspath $(GROUND_TRUTH))" --dataset-version "$(DATASET_VERSION)" --max-events "$(MAX_EVENTS)" --metrics-port "$(METRICS_PORT)"
+
+.PHONY: event-relay kurrentdb-up
+event-relay:
+	cd server && go run ./cmd/event-relay --eventstore "$(KURRENTDB)" --bootstrap-servers "$(BOOTSTRAP_SERVERS)" --group "$(RELAY_GROUP)"
+
+kurrentdb-up:
+	docker compose up -d kurrentdb
 
 consumer:
 	test -f "$(MODEL_PATH)" || (echo "Không tìm thấy ONNX model $(MODEL_PATH); chạy 'make mock-onnx-export' trước." >&2; exit 1)
@@ -76,13 +102,13 @@ onnx-test: mock-onnx-export
 	$(NIX) develop .#paysim --command bash -c 'cd server && ONNX_MODEL_PATH="$(abspath $(MODEL_PATH))" go test ./internal/inference -run TestONNXEngine -v'
 
 raw-sink:
-	cd server && go run ./cmd/sink --kind raw --bootstrap-servers "$(BOOTSTRAP_SERVERS)" --group-id "$(if $(GROUP_ID),$(GROUP_ID),mongodb-raw-sink-group)" --max-retries "$(MAX_RETRIES)" --metrics-port "$(METRICS_PORT)"
+	cd server && go run ./cmd/sink --eventstore "$(KURRENTDB)" --kind raw --bootstrap-servers "$(BOOTSTRAP_SERVERS)" --group-id "$(if $(GROUP_ID),$(GROUP_ID),mongodb-raw-sink-group)" --max-retries "$(MAX_RETRIES)" --metrics-port "$(METRICS_PORT)"
 
 prediction-sink:
-	cd server && go run ./cmd/sink --kind prediction --bootstrap-servers "$(BOOTSTRAP_SERVERS)" --group-id "$(if $(GROUP_ID),$(GROUP_ID),mongodb-sink-group)" --max-retries "$(MAX_RETRIES)" --metrics-port "$(METRICS_PORT)"
+	cd server && go run ./cmd/sink --eventstore "$(KURRENTDB)" --kind prediction --bootstrap-servers "$(BOOTSTRAP_SERVERS)" --group-id "$(if $(GROUP_ID),$(GROUP_ID),mongodb-sink-group)" --max-retries "$(MAX_RETRIES)" --metrics-port "$(METRICS_PORT)"
 
 alert-consumer:
-	cd server && go run ./cmd/sink --kind alert --bootstrap-servers "$(BOOTSTRAP_SERVERS)" --group-id "$(if $(GROUP_ID),$(GROUP_ID),alert-group)" --max-retries "$(MAX_RETRIES)" --metrics-port "$(METRICS_PORT)"
+	cd server && go run ./cmd/sink --eventstore "$(KURRENTDB)" --kind alert --bootstrap-servers "$(BOOTSTRAP_SERVERS)" --group-id "$(if $(GROUP_ID),$(GROUP_ID),alert-group)" --max-retries "$(MAX_RETRIES)" --metrics-port "$(METRICS_PORT)"
 
 web:
 	cd web && npm run dev

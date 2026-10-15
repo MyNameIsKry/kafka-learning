@@ -3,17 +3,110 @@
 Hệ thống phát hiện giao dịch tài chính bất thường trên PaySim sử dụng Kafka,
 MongoDB, GATv2 và React Dashboard.
 
+## Demo đơn giản: một server + một client + Locust
+
+Go server tại `server/cmd/app` chạy API và ba worker nền trong **một process**:
+
+```text
+Locust → POST /api/v1/transactions → KurrentDB (save trước)
+                                      ├─ projection worker → MongoDB
+                                      └─ relay worker → Kafka transactions.raw
+                                                          ↓
+                                                      ONNX mock model worker
+                                                          ↓
+                                                      KurrentDB
+                                                          ↓
+                                      projection worker → MongoDB predictions/alerts
+React dashboard ← GET API ← MongoDB
+```
+
+Relay cũng chuyển scored/anomaly/DLQ sang Kafka để giữ các topic kết quả.
+Projection đọc **trực tiếp KurrentDB**, không phụ thuộc Kafka/model. Hai worker
+có persistent subscription/checkpoint riêng. Khi Kafka lỗi, transaction vẫn có
+thể hiện trên UI với trạng thái `pending`; khi model hoàn tất, thành `normal`
+hoặc `anomaly`. API trả **202 chỉ sau KurrentDB xác nhận**, không đợi scoring.
+
+Tại thư mục gốc project:
+
+```bash
+make demo-infra
+# Terminal 1: API + tất cả worker, không cần các terminal relay/sink/consumer
+make server ANOMALY_THRESHOLD=0.3 MODEL_VERSION=mock-onnx-demo
+# Terminal 2 (npm ci trong web khi chạy lần đầu):
+make web
+# Terminal 3 (cài một lần):
+python3 -m venv .venv  # chỉ khi chưa có .venv
+.venv/bin/pip install -r requirements-locust.txt
+make locust
+```
+
+- Dashboard: http://localhost:5173 (tự refresh).
+- Locust: http://localhost:8089 — thử 5 users, spawn rate 1 trước khi tăng tải.
+- API: http://localhost:8080.
+- Server dùng **ONNX mock model** với input tensor `[batch, 7]`, không phải độ
+  chính xác GATv2; Locust tạo dữ liệu synthetic để đo HTTP/delivery, không phục
+  vụ đánh giá ML.
+- Dừng các process runtime cũ trước khi chạy server mới, nhất là inference và
+  relay: chạy hai cấu hình model khác nhau cùng version có thể gây conflict.
+- `make api` và các command riêng vẫn giữ cho debug/legacy; **demo dùng `make server`**.
+- Không có auth/TLS/rate limit cho ingestion MVP; chỉ chạy local/trusted network.
+
+Gửi một transaction bằng curl (không gửi labels):
+
+```bash
+ID="http-demo-$(date +%s)"
+curl -i http://localhost:8080/api/v1/transactions \
+  -H 'Content-Type: application/json' \
+  -d "{\"schemaVersion\":2,\"transactionId\":\"$ID\",\"sourceRowIndex\":1,\"step\":1,\"type\":\"TRANSFER\",\"amount\":20,\"nameOrig\":\"C1\",\"nameDest\":\"C2\",\"oldbalanceOrg\":200,\"newbalanceOrig\":180,\"oldbalanceDest\":0,\"newbalanceDest\":20}"
+curl http://localhost:8080/api/v1/summary
+```
+
+`transactionId` là idempotency key: retry cùng ID và cùng body → 202, không thêm
+event; cùng ID nhưng khác nội dung → 409; invalid/labels → 400; event store lỗi
+→ 503. Nếu timeout không biết append đã thành công chưa, retry giữ nguyên ID và
+body. Giới hạn body 64 KiB. HTTP nhận giao dịch online theo thứ tự append, không
+sort toàn bộ request theo `step`; preprocessing/graph ordering của model thật
+vẫn cần chốt. `GET /readyz` hiện kiểm tra MongoDB, không báo worker lag/parked.
+
+Dashboard dùng phân trang thật từ API, không chỉ cắt danh sách ở frontend:
+
+```text
+GET /api/v1/transactions?limit=12&offset=12&status=anomaly
+GET /api/v1/alerts?limit=8&offset=8
+```
+
+Response có `offset` và `hasMore`; UI hiển thị nút Previous/Next. Tổng anomaly
+trên summary vẫn là tổng toàn bộ (ví dụ 39), còn danh sách alert hiển thị theo
+từng trang.
+
+Kiểm thử server một process, độc lập Kafka và recovery:
+
+```bash
+make demo-infra
+python3 scripts/app-smoke.py
+```
+
+Test dùng port 18080 và namespace/topics/database riêng, giữ dữ liệu để kiểm tra.
+Delivery at-least-once; upsert MongoDB và ID ổn định chống trùng khi retry.
+Scored/anomaly hiện append riêng: nếu crash giữa hai append, retry hoàn tất
+output còn thiếu trước commit Kafka offset; không hứa atomic multi-stream.
+Subscription có thể park sau nhiều timeout; kiểm tra/replay parked trong
+KurrentDB UI. Không xóa event source-of-truth khi rebuild projection.
+
+Các mục command riêng bên dưới dành cho replay/debug, không cần để chạy demo này.
+
 ## Trạng thái triển khai
 
 - Phase 9: Offline scored-prediction evaluation
-- Kafka KRaft, Kafka UI và MongoDB chạy bằng Docker Compose.
+- KurrentDB, Kafka KRaft, Kafka UI và MongoDB chạy bằng Docker Compose.
 - Các topic PaySim được tạo với một partition cho MVP.
 - MongoDB sẵn sàng; collections được tạo tự động khi sink khởi động.
-- Go runtime contracts, PaySim replay producer, mock inference consumer, raw
+- Go runtime contracts, PaySim replay producer, ONNX inference consumer, raw
   sink, prediction sink và alert consumer đã được triển khai.
-- Kafka là event store/source of truth; MongoDB chỉ là read-model projection có
-  thể rebuild bằng consumer group mới.
-- Metrics vận hành và benchmark runner đã có; model GATv2 thật và graph-state recovery chưa tích hợp.
+- KurrentDB là event store/source of truth. Go relay chuyển event sang Kafka;
+  MongoDB chỉ là read-model projection.
+- Metrics vận hành và benchmark runner đã có; GATv2 thật và graph-state recovery
+  chưa tích hợp. ONNX mock đã được dùng trong unified server.
 
 ## Khởi động infrastructure
 
@@ -23,6 +116,7 @@ make kafka-up
 
 Các service:
 
+- KurrentDB/UI: `http://localhost:2113` (insecure chỉ cho local demo)
 - Kafka: `localhost:9092`
 - Kafka UI: `http://localhost:8090`
 - MongoDB: `mongodb://localhost:27017`
@@ -52,20 +146,25 @@ go mod download
 cd ..
 ```
 
-Python environment chỉ cần cho offline pipeline và evaluation.
+Python environment dùng cho offline pipeline/evaluation và Locust, không cho Go server.
+
+Go runtime yêu cầu Go theo `server/go.mod` (hiện 1.26); Go có thể tự tải toolchain.
 
 Validate CSV và tạo ground truth offline mà không kết nối Kafka:
 
 ```bash
+ROOT="$PWD"
 (cd server && go run ./cmd/producer \
-  --csv "$(pwd)/data/PS_20174392719_1491204439457_log.csv" \
-  --ground-truth-path "$(pwd)/data/ground_truth.csv" \
+  --csv "$ROOT/data/PS_20174392719_1491204439457_log.csv" \
+  --ground-truth-path "$ROOT/data/ground_truth.csv" \
   --dry-run)
 ```
 
-Replay vào Kafka local, ví dụ 100 events/giây:
+Chạy relay trong terminal riêng, rồi ghi CSV vào KurrentDB:
 
 ```bash
+make event-relay
+# terminal khác:
 make producer \
   CSV=data/PS_20174392719_1491204439457_log.csv \
   GROUND_TRUTH=data/ground_truth.csv
@@ -82,31 +181,35 @@ Producer publish raw event có đủ bốn balance nhưng không publish
 
 Producer xác thực toàn bộ CSV, external-sort theo `(step, sourceRowIndex)` với
 chunk giới hạn bộ nhớ và publish theo thứ tự đó. Khi delivery
-failure, producer dừng mặc định để không bỏ qua event giữa chuỗi. Chỉ dùng
-`--continue-on-error` khi muốn chủ động bỏ qua event lỗi.
+failure, producer dừng mặc định để không bỏ qua event giữa chuỗi.
+Producer không gửi trực tiếp vào Kafka: append KurrentDB thành công trước.
 
-## Inference consumer với mock predictor
+## Inference consumer với ONNX mock predictor
 
 Chạy consumer sau khi infrastructure đã khởi động:
 
 ```bash
 (cd server && go run ./cmd/inference \
-  --mock-score 0.1 \
-  --mock-threshold 0.8)
+  --model-path "$(pwd)/gatv2-pipeline/artifacts/mock/anomaly_score.onnx" \
+  --threshold 0.8 \
+  --model-version mock-onnx-v1)
 ```
 
 Để kiểm tra nhánh anomaly trong wiring test:
 
 ```bash
-(cd server && go run ./cmd/inference --mock-score 0.95 --mock-threshold 0.8)
+(cd server && go run ./cmd/inference \
+  --model-path "$(pwd)/gatv2-pipeline/artifacts/mock/anomaly_score.onnx" \
+  --threshold 0.3 \
+  --model-version mock-onnx-v1)
 ```
 
 Consumer chỉ commit input offset sau khi validation/DLQ, inference và các
-output publish cần thiết được Kafka acknowledge. Schema lỗi được publish vào
+output append cần thiết được KurrentDB acknowledge. Schema lỗi được ghi vào KurrentDB trước khi relay sang
 `transactions.dlq`; lỗi inference/output sẽ retry với backoff và dừng mà
 không commit sau khi hết retry. Consumer có bounded dedupe cache trong RAM
 (`--dedupe-cache-size`); graph-state/dedupe durable sau restart sẽ được xử lý
-khi tích hợp inference engine thật.
+khi tích hợp GATv2 thật.
 
 ## Phase 5 — MongoDB sinks và alert consumer
 
@@ -139,9 +242,47 @@ raw theo `transactionId`, prediction/alert theo
 `transactions.dlq`; lỗi MongoDB hoặc lỗi publish DLQ làm batch retry và không
 commit offset cho tới khi lưu thành công.
 
-Kafka là event store authoritative trong runtime Go. MongoDB không phải nguồn
-dữ liệu chính; các collection projection có thể rebuild bằng cách chạy sink
-với consumer group mới từ `FirstOffset`.
+KurrentDB là source of truth. Mỗi event có stream `financial-anomaly-event-<UUID>` và
+envelope gồm `schemaVersion`, `eventId`, `eventType`, `occurredAt`, `topic`, `key`,
+`payload`. Event types: `RawTransactionRecorded`, `TransactionScored`,
+`TransactionAnomalyDetected`, `InvalidEventRecorded`. ID ổn định theo topic và
+transaction/model version (DLQ theo source topic/partition/offset). Append dùng
+`NoStream`; retry kiểm tra event cũ, từ chối payload xung đột, không ghi đè.
+Timestamp retry không thay đổi event đã lưu. Payload Kafka vẫn giữ DTO cũ để
+API/dashboard/offline tooling tương thích; `eventId` nằm trong Kafka header.
+
+Relay dùng persistent subscription `$all` lọc prefix, một subscriber và buffer
+1; ACK chỉ sau Kafka acknowledge. Delivery là **at-least-once**, không phải
+exactly-once. Mất ACK có thể tạo duplicate; sinks upsert idempotent.
+
+Rebuild Kafka: dừng relay cũ, chạy `make event-relay RELAY_GROUP=rebuild-<id>`
+để replay từ đầu KurrentDB. Rebuild MongoDB: chạy sinks với consumer group mới
+và database mới qua `--mongo-db`; không cần xóa database đang dùng. Nếu Kafka
+đã mất history, replay từ KurrentDB trước. Không chạy hai relay cùng lúc khi
+cần giữ thứ tự. KurrentDB single node cần backup; volume không thay backup.
+
+Luồng demo:
+`CSV → Go producer → KurrentDB → Go relay → Kafka raw → Go inference →
+KurrentDB scored/anomaly → Go relay → Kafka → Go sinks → MongoDB → Go API → React`.
+DLQ từ inference/sinks cũng được append vào KurrentDB trước khi relay.
+
+Các runtime Python cũ và Python benchmark direct-to-Kafka là tooling legacy,
+không đại diện cho luồng KurrentDB authoritative và không dùng để nhập event
+production-like. Labels/ground truth vẫn offline, không nằm trong event store.
+
+Kiểm thử KurrentDB và end-to-end (không xóa dữ liệu hiện có):
+
+```bash
+make kafka-up
+(cd server && KURRENTDB_TEST_CONNECTION='kurrentdb://localhost:2113?tls=false' go test ./internal/eventstore -v)
+bash scripts/kurrent-smoke.sh
+```
+
+Smoke test dùng namespace/topics/databases riêng, giữ lại resources để kiểm tra.
+Persistent subscription có thể park event sau nhiều lần timeout: kiểm tra parked
+messages trong KurrentDB UI và replay parked; không coi consumer lag thấp là
+bằng chứng tất cả event đã được chuyển. Kafka/MongoDB lỗi không được xóa event
+KurrentDB. Single-node/insecure chỉ dành cho demo, không phải HA production.
 
 Các collection/index được tạo bởi `MongoStore`:
 
@@ -223,6 +364,7 @@ curl http://127.0.0.1:9101/metrics
 Metrics chính:
 
 - `pipeline_published_records_total`: Kafka publish đã acknowledge; gồm publish lặp do retry.
+- `pipeline_eventstore_appended_records_total`: producer/inference append đã được KurrentDB xác nhận, gồm idempotent retries; không phải Kafka publish.
 - `pipeline_stored_records_total`: DB upsert đã acknowledge; không phải unique documents.
 - `pipeline_committed_records_total`: input records trong batches commit thành công.
 - `pipeline_failures_total`, `pipeline_failed_record_attempts_total`, `pipeline_retries_total`:
